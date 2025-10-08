@@ -1,7 +1,7 @@
 # microcontrollers
 The codebase for the microcontrollers.
 
-1) Peripheral 1 : Servo Motor Control
-2) Peripheral 2 : Communication Channels
-3) Primary : Navigation Algorithm
+Chip1 (Primary): Sensors and Navigation Algorithm
+Chip2 (Peripheral 1): Communication Channels, ROS server
+Chip3 (Peripheral 2): Servo Motor Control and Management
 
