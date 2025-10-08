@@ -5,4 +5,3 @@ The codebase for the microcontrollers.
 2) Peripheral 2 : Communication Channels
 3) Primary : Navigation Algorithm
 
-Test
