@@ -126,5 +126,29 @@ void uart_driver_init(
   );
 }
 
+/* Read a byte from the ring buffer */
+bool uart_read_byte(uart_inst_t *uid, uint8_t *out) {
+  ringbuffer_t *rb = (uid == uart0) ? &rb0 : &rb1;
+  return rb_pop(rb, out);
+}
+
+/* Send a byte via UART*/
+void uart_send_byte(uart_inst_t *uid, uint8_t byte) {
+  uart_write_blocking(uid, &byte, 1); // 1 is the length of the number of bytes being sent
+}
+
+/* Send a string via UART */
+void uart_send_str(uart_inst_t *uid, const char *s) {
+  while (*s) uart_send_byte(uid, s*++);
+}
+
+/* Bulk send bytes via UART */
+void uart_send_bulk(uart_inst_t *uid, uint8_t *bytes, int len) {
+  uart_write_blocking(uid, bytes, len);
+}
+
+
+
+
 
 
