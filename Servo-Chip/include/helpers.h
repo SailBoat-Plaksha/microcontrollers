@@ -10,17 +10,22 @@
 #endif
 
 #include <stdlib.h>
+#include <stdint.h>
+
+#include "servo.h"
 
 /* ---- Pin Helpers ---- */
 
 void pinnit(int pin);
 void poutit(int pin);
+void motor_init(mState *motor);
 
 /* ---- Indicative Helpers */
 
 int led(int high_low);
 
 /* ---- PWM Helpers ---- */
+
 
 #include "hardware/pwm.h"
 

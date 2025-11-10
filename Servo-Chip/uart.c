@@ -20,6 +20,10 @@
 #define UART_RX_BUF_SIZE 256
 #endif
 
+#ifndef UART_LED
+#define UART_LED 22
+#endif
+
 /* ---- Interal Data Structures ---- */
 
 /* Ring buffer to hold Rx data */
@@ -145,7 +149,10 @@ void uart_send_byte(uart_inst_t *uid, uint8_t byte) {
 
 /* Send a string via UART */
 void uart_send_str(uart_inst_t *uid, const char *s) {
+  gpio_put(UART_LED, 1); // UART indicator
   while (*s) uart_send_byte(uid, (uint8_t)(*s++));
+  sleep_ms(10);
+  gpio_put(UART_LED, 0);
 }
 
 /* Bulk send bytes via UART */

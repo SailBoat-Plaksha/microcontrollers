@@ -10,15 +10,16 @@
 */
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "pico/stdlib.h"
 #include "pico/time.h"
+#include "hardware/gpio.h"
 
 #include "include/helpers.h"
 
-
 /* ---- Motor and Encoder Characteristics ---- */
-#define GEAR_RATIO 4.0f // `n` for a ratio of 1:n
-#define COUNTS_PER_MTR_REV 11
-#define COUNTS_PER_REV 44
+#define COUNTS_PER_MTR_REV 44
+#define COUNTS_PER_REV 460 // Rough experimental value
 #define COUNTS_PER_DEGREE (float)COUNTS_PER_REV / 360.0f
 
 /* ---- PWM Limits ---- */
@@ -26,23 +27,11 @@
 #define PWM_WRAP 255
 #define PWM_MAX 255
 
+/* ---- Pins ---- */
 
-// ---- control params (tune if needed) ----
-    const float   KP       = 4.0f;   // proportional gain (duty per deg)
-    const float   KD       = 0.2f;   // derivative gain (deg/tick)
-    const float   DEADBAND = 0.5f;   // stop within ±0.5°
-    const uint8_t DUTY_MIN = 20;     // overcome stiction (~8%)
-    const uint8_t DUTY_MAX = 255;    // full scale
-    const uint32_t DT_MS   = 5;      // loop period (~200 Hz)
-    const uint32_t TIMEOUT_MS = 3000;
+#define STANDBY_PIN 21
 
-static const int8_t DELTA[4][4] = {
-/* prev\curr: 00  01  10  11 */
-              { 0, +1, -1,  0 },  // prev 00
-              {-1,  0,  0, +1 },  // prev 01
-              {+1,  0,  0, -1 },  // prev 10
-              { 0, -1, +1,  0 }   // prev 11
-};
+
 
 /* Status Integer */
 int status = 0;
@@ -51,93 +40,127 @@ int status = 0;
  * ...
  */
 
-int get_direction(bool A_prev, bool B_prev, bool A_curr, bool B_curr) {
-    int prev = (A_prev << 1) | B_prev;
-    int curr = (A_curr << 1) | B_curr;
-
-    return DELTA[prev][curr];
-}
-
-struct encoderState {
-    int A; // Unused
-    int B; // Unused
-
-    int lastA;
-    int lastB;
-
-    long encoder_count;
-} eState;
-
-
-struct motorState {
-    int index;
-
-    /* Characteristics */
-    float angle;
-
-    float min_angle;
-    float max_angle;
-
-    int default_pwm_255; // Default PWM value on PWM wrap 255
-
-    eState encoder;
-
-    /* Pins */
-    uint calibration_pin;
-    uint encoder_pin1;
-    uint encoder_pin2;
-
-    uint forward_pin;
-    uint backward_pin;
-
-    uint pwm_pin;
-
-} mState;
 
 /* ---- Helper Functions ---- */
 
 int angle_to_counts(int angle) {
+    /* Returns the number of integral encoder counts for a given angle. */
     return (int) (COUNTS_PER_DEGREE * angle);   
 }
 
+/*
+ * Function to replace the if-else statements
+ * for the encoder.
+ */
+int get_direction(int lastA, int lastB, int A, int B) {
+    if (A == 1 && B == 1) {
+        if (lastA == 1 && lastB == 0) return 1;
+        else if (lastA == 0 && lastB == 1) return -1;
+        else return 100;
+    } 
+    else if (A == 0 && B == 0) {
+        if (lastA == 0 && lastB == 1) return 1;
+        else if (lastA == 1 && lastB == 0) return -1;
+        else return 200;
+    } 
+    else if (A == 1 && B == 0) {
+        if (lastA == 0 && lastB == 0) return 1;
+        else if (lastA == 1 && lastB == 1) return -1;
+        else return 300;
+    } 
+    else if (A == 0 && B == 1) {
+        if (lastA == 1 && lastB == 1) return 1;
+        else if (lastA == 0 && lastB == 0) return -1;
+        else return 400;
+    } 
+    else {
+        return 2;
+    }
+}
+
+
 /* ---- Encoder Helpers ---- */
 int encoder_init(mState* ms) {
+    /*
+     * Initialise all the pins for a given motor.
+     *
+     * Pins are pulled from motor state structure.
+     */
     pinnit(ms->encoder_pin1);
     pinnit(ms->encoder_pin2);
 
     /* Input Filtering */
-    gpio_set_input_hysteresis_enabled(ms->encoder_pin1);
-    gpio_set_input_hysteresis_enabled(ms->encoder_pin2);
+    gpio_set_input_hysteresis_enabled(ms->encoder_pin1, true);
+    gpio_set_input_hysteresis_enabled(ms->encoder_pin2, true);
 
     /* Seed variables with dummy values */
+    ms->encoder.lastA = gpio_get(ms->encoder_pin1);
+    ms->encoder.lastB = gpio_get(ms->encoder_pin2);
 
+    return 0;
 }
 
 inline int encoder_poll(mState *ms) {
     bool A = gpio_get(ms->encoder_pin1);
     bool B = gpio_get(ms->encoder_pin2);
 
+    int direction;
     if (A != ms->encoder.lastA || B != ms->encoder.lastB) {
-        int direction = get_direction(
+        /*
+        direction = get_direction(
             ms->encoder.lastA,
             ms->encoder.lastB,
             A,
             B
-            );
+        );*/
+
+        ms->encoder.lastA = A;
+        ms->encoder.lastB = B;
+
+
+        /*
+        if (direction != 1 && direction != -1) {
+            // Error handling needed
+            return 10000;
+        }
+
+        return direction;
+        */
+
+        return 1;
     }
 
-    return direction; // +1 or -1
+    return 0; // No state change
+
+    
 }
 
 /* ---- Motor Functions ---- */
 
-void standby(bool flag){
-    if (flag) gpio_put(STANDBY_PIN, 1);
-    else gpio_put(STANDBY_PIN, 0);
+#ifndef STANDBY_PIN
+#define STANDBY_PIN 21
+#endif
+
+void standby(bool enable) {
+    /*
+     * To enable standby mode, the standby pin
+     * must be pulled low. Enable -> 0.
+     */
+    gpio_put(STANDBY_PIN, enable ? 0 : 1);
 }
 
 int startRotate(mState *ms, int dir, int pwm) {
+    if (!ms) return 3; // null ptr
+
+    // Ensure PWM pin is in PWM mode
+    if (gpio_get_function(ms->pwm_pin) != GPIO_FUNC_PWM) {
+        gpio_set_function(ms->pwm_pin, GPIO_FUNC_PWM);
+    }
+
+    // Bring driver out of standby
     standby(false);
+
+    // Direction
     if (dir == 1) {
         gpio_put(ms->forward_pin, 1);
         gpio_put(ms->backward_pin, 0);
@@ -145,14 +168,18 @@ int startRotate(mState *ms, int dir, int pwm) {
         gpio_put(ms->forward_pin, 0);
         gpio_put(ms->backward_pin, 1);
     } else {
-        return 2; /* ERROR: Incorrect direction argument */
+        return 2; // bad dir
     }
 
-    if (pwm > PWM_MAX) pwm = PWM_MAX;
-    if (pwm > PWM_WRAP) pwm = PWM_WRAP;
+    uint slice = pwm_gpio_to_slice_num(ms->pwm_pin);
+    uint16_t wrap = (uint16_t)pwm_hw->slice[slice].top; // current wrap
+    if (pwm < 0) pwm = 0;
+    if (pwm > wrap) pwm = wrap;
 
-    pwmWrite(ms->pwm_pin, pwm);
+    pwmWrite(ms->pwm_pin, (uint16_t)pwm);
+    return 0;
 }
+
 
 int stopRotate(mState *ms) {
     standby(true);
@@ -161,30 +188,36 @@ int stopRotate(mState *ms) {
     gpio_put(ms->backward_pin, 0);
 
     pwmWrite(ms->pwm_pin, 0);
+
+    return 0;
 }
 
 /* ---- Servo Functions ---- */
-void slowRotate(mState *ms, int dir);
+void slowRotate(mState *ms, int dir); // Similar to Servo, uses different pwm
 
 void Servo(mState *ms, int set_angle) {
-    if (set_angle > 360) {
+    // Check for angle values
+    if (set_angle > 360 ) {
         set_angle = set_angle % 360;
+    } else if (set_angle < 0) {
+        set_angle =  - (set_angle % 360);
     }
+
     int current_angle = ms->angle;
     int rotation_dir;
 
     int abs_difference = (current_angle > set_angle) ? (current_angle - set_angle) : (set_angle - current_angle);
 
     if (abs_difference > 360) {
-        // Something has fucked up -- handling added later (Error)
+        // Something has fucked up -- handling added later (Error) <-- This should not be possible
     }
 
     if (abs_difference <= 180) rotation_dir = 1; // Clockwise
     else rotation_dir = -1; // AntiClockwise
 
-    int required_counts = rotation_dir * abs_difference;
+    int required_counts = angle_to_counts(rotation_dir * abs_difference);
 
-    startRotate(ms, 00);
+    startRotate(ms, rotation_dir, ms->default_pwm_255);
 
     absolute_time_t rotation_start_time = get_absolute_time();
     absolute_time_t rotation_current_time;
@@ -200,25 +233,23 @@ void Servo(mState *ms, int set_angle) {
         }
 
         // ... count
-        counts = encoder_poll(ms);
+        counts += encoder_poll(ms);
 
-        if (rotation_dir == 1 || counts >= required_counts) break;
-        else if (rotation_dir == -1 || counts <= required_counts) break;
-        else break; // wtf (Error)
+        if (rotation_dir == 1 && counts >= required_counts) break;
+        else if (rotation_dir == -1 && counts <= required_counts) break;
+        //else break; // wtf (Error)
 
     }
 
     stopRotate(ms);
-
-
-
-
+    ms->angle = set_angle;
 }
 
+/* ---- Callibration  Functions ---- */
 int calibrate(mState* ms) {
     Servo(ms, 0.0); // Bring motor to .0 state first
 
-    while(ms->calibration_pin != 0){
+    while(gpio_get(ms->calibration_pin) != 0){
         slowRotate(ms, 1);
     }
     ms->angle = 0;

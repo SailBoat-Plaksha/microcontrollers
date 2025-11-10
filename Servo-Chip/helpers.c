@@ -5,8 +5,11 @@
  * 
  */
 
+#include <stdint.h>
+
 #include "pico/stdlib.h"
 #include "include/helpers.h"
+#include "include/servo.h"
 
 /* ---- Pin Helpers ---- */
 
@@ -20,10 +23,21 @@ void poutit(int pin) {
     gpio_set_dir(pin, GPIO_OUT);
 }
 
+void motor_init(mState* motor) {
+    pinnit(motor->calibration_pin);
+
+    pinnit(motor->encoder_pin1);
+    pinnit(motor->encoder_pin2);
+
+    poutit(motor->forward_pin);
+    poutit(motor->backward_pin);
+
+    gpio_set_function(motor->pwm_pin, GPIO_FUNC_PWM);
+}
+
 /* ---- Indicative Helpers ----*/
 
 int led(int high_low) {
-    if (EXT_LED == NULL) {return 1;}
     if (high_low > 1 || high_low < 0) {return 1;}
     gpio_put(EXT_LED, high_low);
     return 0;

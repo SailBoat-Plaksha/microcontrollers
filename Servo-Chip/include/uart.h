@@ -31,6 +31,10 @@ extern "C" {
 // Default BAUD rate
 #define UART_DEFAULT_BAUDRATE 115200
 
+// Define UART LED
+#define UART_LED 22
+
+
 /* ----- Type Definitions ----- */
 
 /**

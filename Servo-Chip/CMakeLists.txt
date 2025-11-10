@@ -42,6 +42,7 @@ add_executable(Servo-Chip
         main.c
         uart.c
         helpers.c
+        servo.c
 )
 
 pico_set_program_name(Servo-Chip "Servo-Chip")
@@ -53,7 +54,9 @@ pico_enable_stdio_usb(Servo-Chip 0)
 
 # Add the standard library to the build
 target_link_libraries(Servo-Chip
-        pico_stdlib)
+        pico_stdlib
+        pico_time
+        )
 
 # Add the standard include files to the build
 target_include_directories(Servo-Chip PRIVATE
@@ -63,6 +66,7 @@ target_include_directories(Servo-Chip PRIVATE
 # Add any user requested libraries
 target_link_libraries(Servo-Chip
         hardware_uart 
+        hardware_pwm
         #hardware_i2c
         #hardware_interp
         #hardware_timer
@@ -71,4 +75,7 @@ target_link_libraries(Servo-Chip
         )
 
 pico_add_extra_outputs(Servo-Chip)
+pico_enable_stdio_uart(Servo-Chip 0)
+pico_enable_stdio_usb(Servo-Chip 1)
+
 
