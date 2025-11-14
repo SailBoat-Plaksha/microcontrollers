@@ -66,16 +66,17 @@ static inline void rb_push(ringbuffer_t *rb, uint8_t character) {
 
 /* Pop a byte if present; returns true if a byte was read */
 static inline bool rb_pop(ringbuffer_t *rb, uint8_t *out) {
-  if (rb->head == rb->tail) {
-    return false;
-  }
+    if (rb->head == rb->tail) {
+        return false;
+    }
 
-  *out = rb->buffer[rb->tail];
-  if (rb->tail + 1u == UART_RX_BUF_SIZE) {
-    rb->tail = 0;
-  } else {
-    (rb->tail)++;
-  }
+    *out = rb->buffer[rb->tail];
+    if (rb->tail + 1u == UART_RX_BUF_SIZE) {
+        rb->tail = 0;
+    } else {
+        rb->tail++;
+    }
+    return true;
 }
 
 /* ISR Logic for UART */
@@ -125,7 +126,7 @@ void uart_driver_init(
     irq_set_exclusive_handler(UART0_IRQ, uart0_irq_handler);
     irq_set_enabled(UART0_IRQ, true); // Enables selected interrupt in NVIC
   } else if (uid == uart1) {
-    irq_set_exclusive_handler(UART1_IRQ, uart1_irq_handler);\
+    irq_set_exclusive_handler(UART1_IRQ, uart1_irq_handler);
     irq_set_enabled(UART1_IRQ, true);
   }
 
