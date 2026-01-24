@@ -131,15 +131,16 @@ def send_message_to_lora(message, target_addr=None):
     led.off()
 
 
+# Known commands/destinations for validation
+KNOWN_COMMANDS = {
+    'MOTOR': 'MOTOR:',
+    'GPS': 'GPS:',
+    'NAV': 'NAV:'
+}
+
 def parse_input_command(input_line):
     """
     Parse input from laptop and determine how to handle it.
-    
-    Returns: (command_type, data)
-      - ('AT_DIRECT', raw_command) - Pass directly to LoRA
-      - ('AT_SEND', message) - Encode message and send
-      - ('QUIT', None) - Exit command
-      - ('HELP', None) - Show help
     """
     line = input_line.strip()
     line_upper = line.upper()
@@ -152,31 +153,38 @@ def parse_input_command(input_line):
     if line_upper == 'HELP' or line_upper == '?':
         return ('HELP', None)
     
-    # Check for AT+SEND=<message> format (our special format)
-    # User types: AT+SEND=Hello World
-    # We convert to: AT+SEND=0,<len>,<base64>
+    # Check for sendto <target> <message>
+    if line_upper.startswith('SENDTO '):
+        parts = line.split(' ', 2)
+        if len(parts) < 3:
+            print("[SYS] Usage: sendto <TARGET> <message>")
+            return (None, None)
+        
+        target = parts[1].upper()
+        message = parts[2]
+        
+        if target in KNOWN_COMMANDS:
+            # Valid target, construct prefixed message
+            prefix = KNOWN_COMMANDS[target]
+            full_message = "{} {}".format(prefix, message)
+            return ('AT_SEND', full_message)
+        else:
+            print("[SYS] Invalid target '{}'. Known targets: {}".format(
+                target, ", ".join(KNOWN_COMMANDS.keys())))
+            return (None, None)
+
+    # Check for AT+SEND=<message> format (Deprecated but kept for raw fallback/debug if needed)
     if line_upper.startswith('AT+SEND='):
         # Extract the message part after AT+SEND=
-        message = line[8:]  # Everything after "AT+SEND="
-        
-        # Check if user is trying to use raw RYLR format (AT+SEND=addr,len,data)
-        # We detect this by checking if it starts with a number followed by comma
-        parts = message.split(',', 2)
-        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-            # User is using raw RYLR format, pass through directly
-            print("[SYS] Detected raw AT+SEND format, passing through without encoding")
-            return ('AT_DIRECT', line)
-        
-        # Otherwise, treat as simple message to encode
+        message = line[8:]
         return ('AT_SEND', message)
     
     # All other AT commands pass through directly
     if line_upper.startswith('AT'):
         return ('AT_DIRECT', line)
     
-    # Non-AT input - could treat as message or ignore
-    # For safety, we'll warn and ignore
-    print("[SYS] Warning: Non-AT command ignored. Use AT+SEND=<message> to send.")
+    # Non-AT input
+    print("[SYS] Unknown command. Use 'sendto <TARGET> <msg>' or AT commands.")
     print("[SYS] Type 'help' for usage information.")
     return (None, None)
 
@@ -189,8 +197,9 @@ def show_help():
     print("=" * 55)
     print("")
     print("  MESSAGE SENDING:")
-    print("    AT+SEND=<message>    Send message (auto Base64 encoded)")
-    print("    Example: AT+SEND=Hello World")
+    print("    sendto <TARGET> <msg>  Send message to target")
+    print("    Targets: {}".format(", ".join(KNOWN_COMMANDS.keys())))
+    print("    Example: sendto MOTOR move_forward")
     print("")
     print("  COMMON AT COMMANDS (passed directly to module):")
     print("    AT                   Test module response")
@@ -212,8 +221,8 @@ def show_help():
     print("    quit / exit          Exit the bridge")
     print("")
     print("  RECEIVED MESSAGES:")
-    print("    Incoming LoRA data is automatically decoded from Base64")
-    print("    Format: +RCV=<addr>,<len>,<data>,<RSSI>,<SNR>")
+    print("    Incoming LoRA data is automatically decoded.")
+    print("    Format: <TARGET> SAYS: <message>")
     print("=" * 55)
     print("")
 
@@ -325,9 +334,20 @@ def lora_to_laptop_task():
                                 decoded = decode_from_base64(raw_data)
                                 
                                 if decoded:
-                                    print("[RX] From addr {}: '{}' (RSSI:{}, SNR:{})".format(
-                                        addr, decoded, rssi, snr))
-                                    print(">>> {}".format(decoded))
+                                    # Check if message starts with a known prefix to format nicely
+                                    formatted_output = None
+                                    for target, prefix in KNOWN_COMMANDS.items():
+                                        if decoded.startswith(prefix):
+                                            # Strip prefix and format
+                                            msg_content = decoded[len(prefix):].strip()
+                                            formatted_output = "{} SAYS: {}".format(target, msg_content)
+                                            break
+                                    
+                                    if formatted_output:
+                                        print(formatted_output)
+                                    else:
+                                        # No known prefix, just print raw decoded
+                                        print(">>> {}".format(decoded))
                                 else:
                                     # Not valid Base64, show raw
                                     print("[RX] From addr {}: '{}' (raw, RSSI:{}, SNR:{})".format(

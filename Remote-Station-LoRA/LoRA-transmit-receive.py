@@ -8,10 +8,18 @@ import base64
 # --- Configuration ---
 # Update this to the correct UART port for your Pi 5 setup
 SERIAL_PORT = '/dev/ttyAMA0' 
-BAUD_RATE = 115200
+# Known commands/destinations for validation
+KNOWN_COMMANDS = {
+    'MOTOR': 'MOTOR:',
+    'GPS': 'GPS:',
+    'NAV': 'NAV:'
+}
+BAUD_RATE=115200
 
 # --- Motor Board Interface (Mock) ---
 class MotorBoard:
+
+
     """
     Interface for the Motor Daughter Board.
     Currently mocked to print to console.
@@ -26,7 +34,7 @@ class MotorBoard:
         Send data TO the motor board.
         input: command_data (str or bytes) - decoded data intended for motor
         """
-        print(f"[MotorBoard] RECEIVED CMD: {command_data}")
+        print(f"command executed: {command_data}")
         # Real implementation: serial_motor.write(command_data)
 
     def listen_from_board(self):
@@ -194,11 +202,32 @@ def main():
             
             if user_input.lower() == 'exit':
                 break
+            
+            elif user_input.lower().startswith('sendto '):
+                # Usage: sendto <ADDRESS> <message>
+                parts = user_input.split(' ', 2)
+                if len(parts) < 3:
+                     print("Usage: sendto <ADDRESS> <message>")
+                     continue
+
+                target_addr = parts[1]
+                msg_content = parts[2]
+                
+                # Base64 encode the message
+                encoded_msg = base64.b64encode(msg_content.encode('utf-8')).decode('utf-8')
+                lora.send_message(target_addr, encoded_msg)
+
             elif user_input.lower().startswith('sim_motor '):
-                # Manual test trigger for motor sending
-                # Usage: sim_motor Hello World
-                msg = user_input[10:]c
+                # Legacy helper for simulation
+                msg = user_input[10:]
                 motor.simulate_motor_message(msg)
+                
+            elif user_input.lower().startswith('send '):
+                 # Usage: send <message> (Broadcasts to 0)
+                 msg_content = user_input[5:]
+                 encoded_msg = base64.b64encode(msg_content.encode('utf-8')).decode('utf-8')
+                 lora.send_message(0, encoded_msg)
+                 
             else:
                 # Treat as AT command
                 lora.send_at(user_input)
