@@ -3,6 +3,7 @@
 #include "include/uart.h"
 #include "include/helpers.h"
 #include "include/servo.h"
+#include "cjson.h"
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
@@ -11,6 +12,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #define EXT_LED 22
 
@@ -40,7 +42,31 @@
 static inline void usb_put_byte(uint8_t b) {
     putchar_raw((int)b);  // raw, no line discipline
 }
+/* ---- Servo JSON Wrapper ---- */
+static void servo_json_handler(mState *motor, const char *json_str) {
+    cJSON *json = cJSON_Parse(json_str);
+    if (!json) {
+        uart_send_str(UART_ID, "Error: Invalid JSON\r\n");
+        return;
+    }
 
+    cJSON *angle_item = cJSON_GetObjectItem(json, "angle");
+    if (angle_item && angle_item->type == cJSON_Number) {
+        int angle = (int)angle_item->valuedouble;
+        if (angle >= motor->min_angle && angle <= motor->max_angle) {
+            Servo(motor, angle);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "OK: Servo moved to %d degrees\r\n", angle);
+            uart_send_str(UART_ID, buf);
+        } else {
+            uart_send_str(UART_ID, "Error: Angle out of range\r\n");
+        }
+    } else {
+        uart_send_str(UART_ID, "Error: 'angle' field required\r\n");
+    }
+
+    cJSON_Delete(json);
+}
 /* ---- Global Pointers ---- */
 static mState motor1_state;
 mState *m1 = &motor1_state;
@@ -115,21 +141,32 @@ int main(void) {
     motorSetup();
 
     sleep_ms(1000);
-
     led(0); // Setup complete
-
     sleep_ms(1000);
 
     Servo(m1, 90);
-
     led(1);
-    
+
+    uart_send_str(UART_ID, "\r\n[Ready] Send JSON: {\"angle\": 0-180}\r\n");
+
+    char rx_buffer[512]; //Max input size
+    int buf_idx = 0;
 
     while(true) {
+        uint8_t byte;
+        if (uart_read_byte(UART_ID, &byte)) {
+            if (byte == '\n' || byte == '\r') {
+                if (buf_idx > 0) {
+                    rx_buffer[buf_idx] = '\0';
+                    servo_json_handler(m1, rx_buffer);
+                    buf_idx = 0;
+                }
+            } else if (buf_idx < sizeof(rx_buffer) - 1) {
+                rx_buffer[buf_idx++] = byte;
+            }
+        }
         tight_loop_contents();
     }
-
-
 
     return 0;
 }
