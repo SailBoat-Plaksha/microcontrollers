@@ -31,16 +31,6 @@
 
 #define STANDBY_PIN 21
 
-
-
-/* Status Integer */
-int status = 0;
-/* Status Key:
- * ...
- * ...
- */
-
-
 /* ---- Helper Functions ---- */
 
 int angle_to_counts(int angle) {
@@ -101,6 +91,15 @@ int encoder_init(mState* ms) {
 }
 
 inline int encoder_poll(mState *ms) {
+    /*
+     * As of now this function carries out the same functionality
+     * as raw_counter().
+     * 
+     * This function has to be programmed to report directions and
+     * multiple count slips (although unlikely I think).
+     * 
+     * Alternatively we may 
+     */
     bool A = gpio_get(ms->encoder_pin1);
     bool B = gpio_get(ms->encoder_pin2);
 
@@ -133,6 +132,26 @@ inline int encoder_poll(mState *ms) {
     return 0; // No state change
 
     
+}
+
+inline int raw_counter(mState* ms) {
+    /*
+     * Counts state changes indifferent to the direction of rotation.
+     *
+     * @returns 0 if no state change
+     * @returns 1 if any (even if multiple) stage change(s).
+     */
+    bool A = gpio_get(ms->encoder_pin1);
+    bool B = gpio_get(ms->encoder_pin2);
+
+    int direction;
+    if (A != ms->encoder.lastA || B != ms->encoder.lastB) {
+        ms->encoder.lastA = A;
+        ms->encoder.lastB = B;
+        return 1;
+    }
+
+    return 0;
 }
 
 /* ---- Motor Functions ---- */
@@ -233,7 +252,7 @@ void Servo(mState *ms, int set_angle) {
         }
 
         // ... count
-        counts += encoder_poll(ms);
+        counts += raw_counter(ms);
 
         if (rotation_dir == 1 && counts >= required_counts) break;
         else if (rotation_dir == -1 && counts <= required_counts) break;

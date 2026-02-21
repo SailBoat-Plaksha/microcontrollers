@@ -1,5 +1,12 @@
-// main.c
-#include "cjson.h"
+
+/*
+ * main.c -- The controller for the servo motors.
+ *
+ * Functionality: <incomplete documentation>
+ * 
+ */
+
+#include "include/uart.h"
 #include "include/helpers.h"
 #include "include/servo.h"
 
@@ -13,6 +20,7 @@
 #include <string.h>
 
 #define EXT_LED 22
+#define ERR_LED 17
 
 /* ==== Motor Driver Config ==== */
 #define STANDBY_PIN 21
@@ -27,6 +35,9 @@
 #define M1_CALIBRATION_PIN -1
 
 /* ---- Debug Helpers ---- */
+
+// None...
+
 
 /* Observe serial communication on USB */
 static inline void usb_put_byte(uint8_t b) {
