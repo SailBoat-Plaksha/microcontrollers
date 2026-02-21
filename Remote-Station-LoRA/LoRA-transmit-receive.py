@@ -4,10 +4,12 @@ import time
 import threading
 import sys
 import base64
+import json
 
 # --- Configuration ---
 # Update this to the correct UART port for your Pi 5 setup
 SERIAL_PORT = '/dev/ttyAMA0' 
+MOTOR_SERIAL_PORT = '/dev/ttyUSB0'  # Default USB serial for motor board
 # Known commands/destinations for validation
 KNOWN_COMMANDS = {
     'MOTOR': 'MOTOR:',
@@ -15,55 +17,96 @@ KNOWN_COMMANDS = {
     'NAV': 'NAV:'
 }
 BAUD_RATE=115200
+MOTOR_BAUD_RATE=115200
 
-# --- Motor Board Interface (Mock) ---
+# --- Motor Board Interface (Real) ---
 class MotorBoard:
-
-
     """
-    Interface for the Motor Daughter Board.
-    Currently mocked to print to console.
+    Interface for the Motor Daughter Board connected via USB serial.
+    Accepts JSON commands (e.g., {"angle": 90}) and relays feedback via LoRA.
     """
-    def __init__(self, lora_handler):
+    def __init__(self, lora_handler, port=MOTOR_SERIAL_PORT, baud=MOTOR_BAUD_RATE):
         self.lora_handler = lora_handler
         self.running = True
-        # In a real implementation, you might open another serial port or SPI/I2C connection here.
+        self.ser = None
+        try:
+            self.ser = serial.Serial(port, baud, timeout=1)
+            print(f"[MotorBoard] Serial opened on {port} at {baud} baud")
+        except Exception as e:
+            print(f"[MotorBoard] Failed to open motor serial: {e}")
 
     def send_to_board(self, command_data):
         """
-        Send data TO the motor board.
-        input: command_data (str or bytes) - decoded data intended for motor
+        Send data TO the motor board. Ensures the command is valid JSON with 'angle'.
         """
-        print(f"command executed: {command_data}")
-        # Real implementation: serial_motor.write(command_data)
+        print(f"[MotorBoard] Received command to forward: {command_data}")
+        if not self.ser:
+            print("[MotorBoard] Serial not connected, cannot send.")
+            return
+
+        payload = None
+        command_data = command_data.strip()
+        
+        try:
+            parsed = json.loads(command_data)
+            if "angle" in parsed:
+                angle = max(0, min(180, int(parsed["angle"])))
+                payload = json.dumps({"angle": angle})
+        except json.JSONDecodeError:
+            # Try to interpret as raw integer just in case
+            if command_data.isdigit():
+                angle = max(0, min(180, int(command_data)))
+                payload = json.dumps({"angle": angle})
+                
+        if payload:
+            try:
+                data_to_send = payload + '\n'
+                self.ser.write(data_to_send.encode('utf-8'))
+                print(f"[MotorBoard] Sent to driver: {payload}")
+            except Exception as e:
+                print(f"[MotorBoard] Write error: {e}")
+        else:
+            print(f"[MotorBoard] Invalid command discarded (must contain 'angle'): {command_data}")
 
     def listen_from_board(self):
         """
-        Simulate receiving data FROM the motor board.
-        In a real implementation, this would be a loop reading from the motor board's interface.
+        Continuously read from the motor board's serial interface and relay to base station.
         """
-        print("[MotorBoard] Listener started (Mock implementation)")
+        print("[MotorBoard] Listener started")
         while self.running:
-            # SImulate random data transmission for testing or wait for real input
-            # For now, we just sleep. You can implement a key-trigger or timer to simulate data.
-            time.sleep(1)
+            if self.ser and self.ser.in_waiting > 0:
+                try:
+                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    if line:
+                        print(f"[MotorBoard Rx] {line}")
+                        self.relay_to_base(line)
+                except Exception as e:
+                    print(f"[MotorBoard] Read Error: {e}")
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
 
-    def stop(self):
-        self.running = False
-
-    def simulate_motor_message(self, message):
+    def relay_to_base(self, message):
         """
-        Helper to manually trigger a message FROM the motor board,
-        which should then be sent OUT via LoRA.
+        Helper to transmit motor feedback back to the base station via LoRA.
         """
-        print(f"[MotorBoard] Sending info: {message}")
+        print(f"[MotorBoard] Relaying to base: {message}")
         prefix = "MOTOR SAYS:"
         full_msg = f"{prefix} {message}"
         encoded_msg = base64.b64encode(full_msg.encode('utf-8')).decode('utf-8')
         
-        # Address to send to? Defaulting to broadcast or specific address 0 for now
+        # Defaulting to broadcast address 0
         target_address = 0 
         self.lora_handler.send_message(target_address, encoded_msg)
+
+    def stop(self):
+        self.running = False
+        if self.ser:
+            self.ser.close()
+
+    def simulate_motor_message(self, message):
+        """Legacy helper matching old code structure for 'sim_motor'."""
+        self.relay_to_base(message)
 
 
 # --- Command Dispatcher ---
