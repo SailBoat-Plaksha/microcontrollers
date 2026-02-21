@@ -1,4 +1,10 @@
-// main.c
+
+/*
+ * main.c -- The controller for the servo motors.
+ *
+ * Functionality: <incomplete documentation>
+ * 
+ */
 
 #include "include/uart.h"
 #include "include/helpers.h"
@@ -15,6 +21,7 @@
 #include <string.h>
 
 #define EXT_LED 22
+#define ERR_LED 17
 
 /* ==== UART Config ==== */
 #define UART_ID   uart0
@@ -36,6 +43,8 @@
 #define M1_CALIBRATION_PIN -1
 
 /* ---- Debug Helpers ---- */
+
+// None...
 
 
 /* Observe serial communication on USB */
