@@ -65,12 +65,12 @@ extern ringbuf_t rb1;
 void uart_driver_init(uart_inst_t *uart_id,  uint baud, uint tx_pin, uint rx_pin);
 
 /**
- * @brief Write a character over UART.
+ * @brief Send a single byte over UART.
  *
  * @param uart_id UART instance
- * @param c Character to send
+ * @param byte Byte to send
  */
-void uart_send_char(uart_inst_t *uart_id, char c);
+void uart_send_byte(uart_inst_t *uart_id, uint8_t byte);
 
 /**
  * @brief Write a string over UART.
@@ -81,18 +81,19 @@ void uart_send_char(uart_inst_t *uart_id, char c);
 void uart_send_str(uart_inst_t *uart_id, const char *str);
 
 /**
- * @brief Read a character from the RX buffer (non-blocking).
+ * @brief Read a byte from the RX buffer (non-blocking).
  *
  * @param uart_id UART instance
- * @param c Pointer to store received character
- * @return true if a character was read, false if buffer empty
+ * @param out Pointer to store received byte
+ * @return true if a byte was read, false if buffer empty
  */
-bool uart_read_char(uart_inst_t *uart_id, char *c);
+bool uart_read_byte(uart_inst_t *uart_id, uint8_t *out);
 
 /**
  * @brief Clear the RX ring buffer.
  *
  * @param rb Pointer to ring buffer
+ * @note NOT IMPLEMENTED
  */
 void uart_clear_buffer(ringbuf_t *rb);
 
@@ -101,18 +102,38 @@ void uart_clear_buffer(ringbuf_t *rb);
  *
  * @param rb Pointer to ring buffer
  * @return true if empty, false otherwise
+ * @note NOT IMPLEMENTED
  */
 bool uart_buffer_empty(const ringbuf_t *rb);
 
 /**
  * @brief ISR handler for UART0 RX.
+ * @note NOT IMPLEMENTED
  */
 void on_uart0_rx(void);
 
 /**
  * @brief ISR handler for UART1 RX.
+ * @note NOT IMPLEMENTED
  */
 void on_uart1_rx(void);
+
+/**
+ * @brief Send multiple bytes over UART.
+ *
+ * @param uart_id UART instance
+ * @param bytes Pointer to byte array
+ * @param len Number of bytes to send
+ */
+void uart_send_bulk(uart_inst_t *uart_id, uint8_t *bytes, int len);
+
+/**
+ * @brief UART error handler.
+ *
+ * @param err_code Error code
+ * @note STUB - not yet implemented
+ */
+void UART_error(int err_code);
 
 #ifdef __cplusplus
 }

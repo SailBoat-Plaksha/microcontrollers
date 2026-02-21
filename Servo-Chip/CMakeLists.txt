@@ -43,6 +43,7 @@ add_executable(Servo-Chip
         uart.c
         helpers.c
         servo.c
+        cjson.c
 )
 
 pico_set_program_name(Servo-Chip "Servo-Chip")
