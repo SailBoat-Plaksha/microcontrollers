@@ -201,39 +201,40 @@ int stopRotate(mState *ms) {
 void slowRotate(mState *ms, int dir); // Similar to Servo, uses different pwm
 
 void Servo(mState *ms, int set_angle) {
-    // Modulo Arithmetic
-    set_angle = (set_angle % 360 + 360) % 360;
-
     int current_angle = ms->angle;
 
-    // Find the difference and wrap it strictly to [-180, 180]
+    // Calculate the exact difference
     int diff = set_angle - current_angle;
-    if (diff > 180) diff -= 360;
-    if (diff < -180) diff += 360;
 
-    int rotation_dir = (diff >= 0) ? 1 : -1;
+    // If we are already at the exact target, exit early
+    if (diff == 0) return;
 
-    // Distance must always be strictly positive
-    int abs_difference = (diff >= 0) ? diff : -diff;
+    // Determine direction based on the sign of the difference
+    int rotation_dir = (diff > 0) ? 1 : -1;
+
+    // Distance must always be strictly positive for the counter
+    int abs_difference = (diff > 0) ? diff : -diff;
     int required_counts = angle_to_counts(abs_difference);
 
     startRotate(ms, rotation_dir, ms->default_pwm_255);
 
     absolute_time_t rotation_start_time = get_absolute_time();
-    int net_counts = 0; // Track real movement
+    int net_counts = 0; // Track movement
+
+    // Dynamic timeout:
+    // 5 seconds base + 2 seconds for every 360 degrees requested
+    uint64_t timeout_us = 5000000 + ((uint64_t)(abs_difference / 360) * 2000000);
 
     while(true) {
-        // Timeout check (10 seconds)
-        if (absolute_time_diff_us(rotation_start_time, get_absolute_time()) > 10000000) {
+        // Safety Timeout check (dynamic)
+        if (absolute_time_diff_us(rotation_start_time, get_absolute_time()) > timeout_us) {
             break; 
         }
 
-        // Tally quadrature steps (+1, -1, or 0)
+        // Tally quadrature steps
         net_counts += encoder_poll(ms); 
 
-        // Get the absolute distance traveled. 
-        // This ensures the logic works regardless of whether motor 'forward'
-        // translates to encoder '+1' or '-1' based on wiring.
+        // Get the absolute distance traveled
         int current_distance = (net_counts >= 0) ? net_counts : -net_counts;
 
         if (current_distance >= required_counts) {
@@ -242,7 +243,7 @@ void Servo(mState *ms, int set_angle) {
     }
 
     stopRotate(ms);
-    ms->angle = set_angle; 
+    ms->angle = set_angle;
 }
 
 /* ---- Callibration  Functions ---- */
