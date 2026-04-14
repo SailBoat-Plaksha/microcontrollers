@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "include/cjson.h"
+
 #define EXT_LED 22
 #define ERR_LED 17
 
@@ -89,27 +91,31 @@ int motorSetup(void) {
   standby(true); // Hold driver in standby
 
   /* ---- Define Motor 1 ---- */
-  motor1_state = (mState){.index = 1,
+  motor1_state = (mState){
+    .index = 1,
 
-                          .angle = 0.0f,
-                          .min_angle = 0.0f,
-                          .max_angle = 180.0f,
+    .angle = 0.0f,
+    .min_angle = 0.0f,
+    .max_angle = 180.0f,
 
-                          .default_pwm_255 = 128,
+    .default_pwm_255 = 128,
 
-                          .encoder = {.A = 0,
-                                      .B = 0,
-                                      .lastA = 0,
-                                      .lastB = 0,
+    .encoder = {
+      .A = 0,
+      .B = 0,
+      .lastA = 0,
+      .lastB = 0,
 
-                                      .encoder_count = 0},
+      .encoder_count = 0
+      },
 
-                          .calibration_pin = M1_CALIBRATION_PIN,
-                          .encoder_pin1 = M1_ENC_1,
-                          .encoder_pin2 = M1_ENC_2,
-                          .forward_pin = INA_1,
-                          .backward_pin = INA_2,
-                          .pwm_pin = PWM_A};
+    .calibration_pin = M1_CALIBRATION_PIN,
+    .encoder_pin1 = M1_ENC_1,
+    .encoder_pin2 = M1_ENC_2,
+    .forward_pin = INA_1,
+    .backward_pin = INA_2,
+    .pwm_pin = PWM_A
+    };
 
   /* ---- Init Motor 1 ---- */
   motor_init(m1);
