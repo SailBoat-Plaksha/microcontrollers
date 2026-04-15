@@ -18,9 +18,15 @@
 #include "include/helpers.h"
 
 /* ---- Motor and Encoder Characteristics ---- */
+#ifndef COUNTS_PER_MTR_REV
 #define COUNTS_PER_MTR_REV 44
+#endif
+#ifndef COUNTS_PER_REV
 #define COUNTS_PER_REV 460 // Rough experimental value
+#endif
+#ifndef COUNTS_PER_DEGREE
 #define COUNTS_PER_DEGREE (float)COUNTS_PER_REV / 360.0f
+#endif
 
 /* ---- PWM Limits ---- */
 
