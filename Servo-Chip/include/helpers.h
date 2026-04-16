@@ -30,6 +30,7 @@ void motor_init(mState *motor);
 /* ---- Indicative Helpers */
 
 int led(int high_low);
+int err_led(int high_low);
 
 /* ==== Data Structures ==== */
 
