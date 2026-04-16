@@ -16,6 +16,10 @@
 #define ERR_LED 17
 #endif
 
+#ifndef DEBUG_LED
+#define DEBUG_LED 16
+#endif
+
 #include <stdlib.h>
 #include <stdint.h>
 
@@ -31,6 +35,7 @@ void motor_init(mState *motor);
 
 int led(int high_low);
 int err_led(int high_low);
+int debug_led(int high_low);
 
 /* ==== Data Structures ==== */
 
