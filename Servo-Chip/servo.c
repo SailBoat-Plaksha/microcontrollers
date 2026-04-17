@@ -198,6 +198,10 @@ int stopRotate(mState *ms) {
 }
 
 int stopRotate_noStandby(mState *ms) {
+    /*
+     * Stops a motor from rotating without bringing
+     * the motor driver into the low-power standby mode.
+     */
     gpio_put(ms->forward_pin, 0);
     gpio_put(ms->backward_pin, 0);
 
