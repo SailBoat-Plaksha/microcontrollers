@@ -197,6 +197,15 @@ int stopRotate(mState *ms) {
     return 0;
 }
 
+int stopRotate_noStandby(mState *ms) {
+    gpio_put(ms->forward_pin, 0);
+    gpio_put(ms->backward_pin, 0);
+
+    pwmWrite(ms->pwm_pin, 0);
+
+    return 0;
+}
+
 /* ---- Servo Functions ---- */
 void slowRotate(mState *ms, int dir); // Similar to Servo, uses different pwm
 

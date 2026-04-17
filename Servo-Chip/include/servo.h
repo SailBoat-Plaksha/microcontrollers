@@ -102,7 +102,7 @@ void standby(bool enable);
 
 int startRotate(mState *ms, int dir, int pwm);
 int stopRotate(mState *ms);
-
+int stopRotate_noStandby(mState *ms);
 /* Servo motion */
 void slowRotate(mState *ms, int dir);   /* declared in .c, implemented later */
 void Servo(mState *ms, int set_angle);
