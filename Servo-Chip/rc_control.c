@@ -24,15 +24,23 @@
 
 #define MOTOR_PIN   13   // Currently unused
 
+#ifndef RC_FLAG_PIN
+#define RC_FLAG_PIN 9
+#endif
+
 #define DEADBAND 25
 
 /* -- Store the time variables -- */
 volatile uint32_t rudder_pulse_us = 1500;
 volatile uint32_t sail_pulse_us = 1500;
 
+volatile uint32_t mode_pulse_us = 1000;
+
 // Pulse start times
 static absolute_time_t rudder_rise_time;
 static absolute_time_t sail_rise_time;
+
+static absolute_time_t mode_rise_time;
 
 /* ---- Interrupt Hanlder ---- */
 void rc_irq_handler(uint gpio, uint32_t events) {
@@ -70,12 +78,22 @@ void rc_irq_handler(uint gpio, uint32_t events) {
                 (uint32_t)absolute_time_diff_us(sail_rise_time, current_time);
         }
     }
+
+    if (gpio == RC_FLAG_PIN) {
+        if (events & GPIO_IRQ_EDGE_RISE) {
+            mode_rise_time = current_time;
+        } else if (events & GPIO_IRQ_EDGE_FALL) {
+            mode_pulse_us = (uint32_t)absolute_time_diff_us(mode_rise_time, current_time);
+        }
+    }
 }
 
 /* ---- Initialization Function ---- */
 int setup_rc(void){
     pinnit(RUDDER_PIN);
     pinnit(SAIL_PIN);
+
+    pinnit(RC_FLAG_PIN);
     
     gpio_set_irq_enabled_with_callback(
         RUDDER_PIN,                                 // Pin
@@ -89,6 +107,13 @@ int setup_rc(void){
         GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
         true,
         &rc_irq_handler
+    );
+
+    // Since Picos only have a single IRQ pin, the handler is implicitly defined now.
+    gpio_set_irq_enabled(
+        RC_FLAG_PIN,
+        GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+        true
     );
 
     return 0;
