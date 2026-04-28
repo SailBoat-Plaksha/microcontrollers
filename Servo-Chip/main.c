@@ -199,14 +199,17 @@ int motorSetup(void) {
 
 int startup_tests(void) {
   for (int i = 0; i < 3; i++) {
+    /* Test LEDS */
     led(1);
     err_led(1);
     debug_led(1);
 
+    /* Test Motors */
     startRotate(sail_motor, 1, 255);
     startRotate(rudder_motor, 1, 255);
 
     sleep_ms(500);
+    // TODO: Using encoders check if the motors are spinning
 
     stopRotate_noStandby(sail_motor);
     stopRotate(rudder_motor);
@@ -216,6 +219,8 @@ int startup_tests(void) {
 
     sleep_ms(500);
   }
+
+  /* Communication Tests */
 
   return 0;
 }
