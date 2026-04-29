@@ -53,10 +53,16 @@ int led(int high_low) {
 }
 
 int err_led(int high_low) {
-    if (high_low > 1 || high_low < 0) {return -1;}
+    if (high_low > 1 || high_low < 0) {return 1;}
 
     gpio_put(ERR_LED, high_low);
     return 0;
+}
+
+int debug_led(int high_low) {
+    if (high_low > 1 || high_low < 0) {return 1;}
+
+    gpio_put(DEBUG_LED, high_low);
 }
 
 /* ---- Data Structures ---- */
