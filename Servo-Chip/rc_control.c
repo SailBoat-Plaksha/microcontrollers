@@ -19,13 +19,13 @@
 
 #include "include/rc_control.h"
 
-#define RUDDER_PIN  14
-#define SAIL_PIN    15
+#define RUDDER_PIN  18
+#define SAIL_PIN    19
 
-#define MOTOR_PIN   13   // Currently unused
+#define MOTOR_PIN   20   // Currently unused
 
 #ifndef RC_FLAG_PIN
-#define RC_FLAG_PIN 9
+#define RC_FLAG_PIN 21
 #endif
 
 #define DEADBAND 25

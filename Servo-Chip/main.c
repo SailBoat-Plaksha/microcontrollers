@@ -27,7 +27,7 @@
 #define ERR_LED 17
 
 /* ==== Motor Driver Config ==== */
-#define STANDBY_PIN 21
+#define STANDBY_PIN 9
 
 /* -- Encoders -- */
 #define M1_ENC_1 2
@@ -37,13 +37,13 @@
 #define M2_ENC_2 5
 
 /* -- Pins -- */
-#define PWM_A 20
-#define INA_2 19
-#define INA_1 18
+#define PWM_A 10
+#define INA_2 11
+#define INA_1 12
 
-#define PWM_B 12
-#define INB_2 11
-#define INB_1 10
+#define PWM_B 15
+#define INB_2 14
+#define INB_1 13
 
 #define M1_CALIBRATION_PIN -1
 #define M2_CALIBRATION_PIN -2
