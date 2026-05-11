@@ -18,9 +18,15 @@
 #include "include/helpers.h"
 
 /* ---- Motor and Encoder Characteristics ---- */
+#ifndef COUNTS_PER_MTR_REV
 #define COUNTS_PER_MTR_REV 44
-#define COUNTS_PER_REV 460 // Rough experimental value
+#endif
+#ifndef COUNTS_PER_REV
+#define COUNTS_PER_REV 400 // Rough experimental value
+#endif
+#ifndef COUNTS_PER_DEGREE
 #define COUNTS_PER_DEGREE (float)COUNTS_PER_REV / 360.0f
+#endif
 
 /* ---- PWM Limits ---- */
 
@@ -92,46 +98,32 @@ int encoder_init(mState* ms) {
 
 inline int encoder_poll(mState *ms) {
     /*
-     * As of now this function carries out the same functionality
-     * as raw_counter().
-     * 
-     * This function has to be programmed to report directions and
-     * multiple count slips (although unlikely I think).
-     * 
-     * Alternatively we may 
+     * Evaluates quadrature encoder state changes.
+     * * @returns 1 or -1 for valid directional steps.
+     * @returns 0 for no change or invalid skipped states.
      */
     bool A = gpio_get(ms->encoder_pin1);
     bool B = gpio_get(ms->encoder_pin2);
 
-    int direction;
     if (A != ms->encoder.lastA || B != ms->encoder.lastB) {
-        /*
-        direction = get_direction(
+        
+        int direction = get_direction(
             ms->encoder.lastA,
             ms->encoder.lastB,
             A,
             B
-        );*/
+        );
 
         ms->encoder.lastA = A;
         ms->encoder.lastB = B;
 
-
-        /*
-        if (direction != 1 && direction != -1) {
-            // Error handling needed
-            return 10000;
+        // Only return valid +1 or -1 steps. Ignore error codes.
+        if (direction == 1 || direction == -1) {
+            return direction;
         }
-
-        return direction;
-        */
-
-        return 1;
     }
 
-    return 0; // No state change
-
-    
+    return 0; // No state change or invalid state change
 }
 
 inline int raw_counter(mState* ms) {
@@ -151,7 +143,9 @@ inline int raw_counter(mState* ms) {
         return 1;
     }
 
-    return 0;
+    return 0; // No state change
+
+    
 }
 
 /* ---- Motor Functions ---- */
@@ -211,53 +205,62 @@ int stopRotate(mState *ms) {
     return 0;
 }
 
+int stopRotate_noStandby(mState *ms) {
+    /*
+     * Stops a motor from rotating without bringing
+     * the motor driver into the low-power standby mode.
+     */
+    gpio_put(ms->forward_pin, 0);
+    gpio_put(ms->backward_pin, 0);
+
+    pwmWrite(ms->pwm_pin, 0);
+
+    return 0;
+}
+
 /* ---- Servo Functions ---- */
 void slowRotate(mState *ms, int dir); // Similar to Servo, uses different pwm
 
 void Servo(mState *ms, int set_angle) {
-    // Check for angle values
-    if (set_angle > 360 ) {
-        set_angle = set_angle % 360;
-    } else if (set_angle < 0) {
-        set_angle =  - (set_angle % 360);
-    }
-
     int current_angle = ms->angle;
-    int rotation_dir;
 
-    int abs_difference = (current_angle > set_angle) ? (current_angle - set_angle) : (set_angle - current_angle);
+    // Calculate the exact difference
+    int diff = set_angle - current_angle;
 
-    if (abs_difference > 360) {
-        // Something has fucked up -- handling added later (Error) <-- This should not be possible
-    }
+    // If we are already at the exact target, exit early
+    if (diff == 0) return;
 
-    if (abs_difference <= 180) rotation_dir = 1; // Clockwise
-    else rotation_dir = -1; // AntiClockwise
+    // Determine direction based on the sign of the difference
+    int rotation_dir = (diff > 0) ? 1 : -1;
 
-    int required_counts = angle_to_counts(rotation_dir * abs_difference);
+    // Distance must always be strictly positive for the counter
+    int abs_difference = (diff > 0) ? diff : -diff;
+    int required_counts = angle_to_counts(abs_difference);
 
     startRotate(ms, rotation_dir, ms->default_pwm_255);
 
     absolute_time_t rotation_start_time = get_absolute_time();
-    absolute_time_t rotation_current_time;
-    int counts = 0;
-    //int required_counts = angle_to_counts(set_angle);
+    int net_counts = 0; // Track movement
+
+    // Dynamic timeout:
+    // 5 seconds base + 2 seconds for every 360 degrees requested
+    uint64_t timeout_us = 5000000 + ((uint64_t)(abs_difference / 360) * 2000000);
 
     while(true) {
-
-        rotation_current_time = get_absolute_time();
-        if (absolute_time_diff_us(rotation_start_time, rotation_current_time) > 10000000) {
-            // Stuck in this fuckass loop for too long
-            break;
+        // Safety Timeout check (dynamic)
+        if (absolute_time_diff_us(rotation_start_time, get_absolute_time()) > timeout_us) {
+            break; 
         }
 
-        // ... count
-        counts += raw_counter(ms);
+        // Tally quadrature steps
+        net_counts += encoder_poll(ms); 
 
-        if (rotation_dir == 1 && counts >= required_counts) break;
-        else if (rotation_dir == -1 && counts <= required_counts) break;
-        //else break; // wtf (Error)
+        // Get the absolute distance traveled
+        int current_distance = (net_counts >= 0) ? net_counts : -net_counts;
 
+        if (current_distance >= required_counts) {
+            break;
+        }
     }
 
     stopRotate(ms);

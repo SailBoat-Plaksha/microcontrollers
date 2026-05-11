@@ -44,6 +44,8 @@ add_executable(Servo-Chip
         helpers.c
         servo.c
         cjson.c
+        rc_control.c
+        operating_loops.c
 )
 
 pico_set_program_name(Servo-Chip "Servo-Chip")

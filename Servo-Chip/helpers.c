@@ -53,10 +53,16 @@ int led(int high_low) {
 }
 
 int err_led(int high_low) {
-    if (high_low > 1 || high_low < 0) {return -1;}
+    if (high_low > 1 || high_low < 0) {return 1;}
 
     gpio_put(ERR_LED, high_low);
     return 0;
+}
+
+int debug_led(int high_low) {
+    if (high_low > 1 || high_low < 0) {return 1;}
+
+    gpio_put(DEBUG_LED, high_low);
 }
 
 /* ---- Data Structures ---- */
@@ -171,7 +177,7 @@ void Error(Controller_Status* status, int code) {
     err_led(1);
     int response = enqueue(&(status->ErrorCodes), code);
 
-    if (response = -1) {
+    if (response == -1) {
         // EMG UART -> Error array is full. Error still recorded.
         // UART channels are yet to be structured.       
     }
