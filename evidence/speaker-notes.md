@@ -1,17 +1,17 @@
 # MAVLink migration — speaker notes
 
-## Slide 1 — One packet format, end to end
+## Slide 1 — MAVLink. Every link.
 
-We had JSON and text packet paths that did not agree across the Pi, radio, and servo board. This branch gives those active paths one MAVLink 2 wire format. The only translation is Base64 around the RYLR998 modem, because that modem accepts ASCII AT commands. This is a committed local branch, not a hardware test claim.
+Previously the Pi, LoRa bridge, and servo code used incompatible JSON or text packet paths. This branch replaces the active paths with MAVLink 2 frames. The diagram shows the frame boundary: start byte, header, payload, and checksum. The XML dialect is the shared contract. The LoRa modem still needs ASCII AT commands, which is handled at its boundary only.
 
-## Slide 2 — The wire path
+## Slide 2 — One frame. Three links.
 
-Walk left to right. On binary-safe USB and UART links we send the MAVLink frame directly. At the RYLR998 interface, a complete frame is Base64 encoded into one AT+SEND packet, then decoded at the receiving gateway. The example setpoint is 26 binary bytes and 36 ASCII characters. The servo accepts a command only after frame and command checks; the old cJSON paths are no longer active.
+Follow the command from ground to the servo board. The gateways place one complete MAVLink frame inside the RYLR998 ASCII AT+SEND payload, then restore the same binary bytes on the other side. The Pi router and servo USB link carry raw frames without JSON or Base64. The example setpoint is 26 bytes as a frame and 36 Base64 characters on the radio interface. The arrow is a transport view, not a measured RF trace.
 
-## Slide 3 — Packet behavior is repeatable
+## Slide 3 — Packet tests.
 
-The tests are repeatable on a host computer. They cover serial chunking and reassembly, Base64 radio wrapping, corrupted packet rejection, the MicroPython gateway validator, Pi routing, and C/Python frame agreement. The 100 out of 100 figures are deterministic test cases, not measured radio delivery rates. For a terminal screenshot, run the command shown on this slide from the repository root.
+All eight host unit tests pass. The serial test feeds 100 frames in three-byte chunks and checks that they are recovered in order. The LoRa test round trips 100 intact Base64 envelopes and deliberately corrupts 100 frames; all damaged frames fail CRC validation. The C and Python implementations emit identical bytes. These are deterministic software tests, not radio delivery or range measurements. Run the command shown at the bottom to capture your own terminal screenshot.
 
-## Slide 4 — Ready for a board-level trial
+## Slide 4 — Next: on-board evidence.
 
-The branch is ready for a board-level trial, with the software packet path and evidence committed together. The host test proves bytes and validation behavior, but this machine does not have the Pico SDK or ARM toolchain, so firmware build and hardware measurements are still outstanding. The parser deliberately supports the eight boat messages plus HEARTBEAT and unsigned MAVLink 2 frames. The next useful evidence is a flashed-board run measuring actual radio delivery and motor response.
+The host evidence establishes frame encoding, routing, reassembly, CRC rejection, and command validation. The firmware has not been built or run on boards in this checkout because the Pico SDK and ARM toolchain were unavailable in the initial environment. Next we need to build and flash both Picos, measure packet loss and latency over actual radio hardware, and verify motor motion and RC override. The current minimal parser supports the eight boat-specific messages plus HEARTBEAT and accepts unsigned MAVLink 2 frames.

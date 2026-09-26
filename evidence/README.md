@@ -9,6 +9,7 @@ paste into slides:
 3. `03-packet-trace.png`: one concrete setpoint frame and its AT+SEND payload.
 4. `04-test-console.png`: rendered capture of the exact test runner output.
 
+`mavlink-migration.html` is a four-slide, 16:9 presentation.
 `host-test-results.txt` contains the complete test output. These results are
 software tests on the host computer. The Pico firmware could not be built here
 because the Pico SDK and ARM toolchain are unavailable. Real radio range,
@@ -22,6 +23,7 @@ python -m unittest discover -s tests -v
 ```
 
 The second command needs Python 3 and a host C compiler (`gcc`). `mavlink-migration.html`
-is a four-slide standalone deck. Use arrow keys, Space, or the on-screen arrows
-to move; press `N` for the current slide's speaker notes. A copy of those notes
-is in `speaker-notes.md`.
+is a four-slide deck using version-pinned Lyne components and tokens from
+jsDelivr, so it needs an internet connection for the full styling. Use arrow
+keys, Space, or the on-screen buttons to move; press `N` for the current slide's
+speaker notes. A copy of those notes is in `speaker-notes.md`.
