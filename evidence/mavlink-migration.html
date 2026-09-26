@@ -46,47 +46,37 @@
     }
     .folio { display: flex; justify-content: space-between; align-items: center; gap: var(--sbb-spacing-fixed-4x, 1rem); font-size: var(--small); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
     .folio span:last-child { color: var(--muted); }
-    .small-label { color: var(--muted); font-size: var(--small); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
     sbb-title { display: block; color: var(--ink); --sbb-title-color: var(--ink); }
     sbb-title.hero-title { --sbb-title-font-size: var(--heading); font-size: var(--heading); line-height: .98; letter-spacing: -.055em; }
     sbb-title.section-title { --sbb-title-font-size: clamp(2.3rem, 5vw, 5.2rem); font-size: clamp(2.3rem, 5vw, 5.2rem); line-height: 1.02; letter-spacing: -.04em; }
     .slide-middle { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
-    .slide-bottom { display: flex; justify-content: space-between; align-items: center; gap: var(--gap); border-top: 1px solid var(--rule); padding-top: var(--sbb-spacing-fixed-4x, 1rem); font-size: var(--small); color: var(--muted); min-height: var(--sbb-spacing-fixed-8x, 2rem); }
 
-    /* The cover uses packet structure as the single visual. */
+    /* A short, evenly divided MAVLink frame replaces the tall field boxes. */
     .cover { display: grid; grid-template-columns: 1.1fr .9fr; gap: var(--gap); align-items: center; }
-    .packet { display: grid; grid-template-columns: .6fr 1.2fr 1.6fr .8fr; width: 100%; border: 2px solid var(--ink); min-height: clamp(8rem, 22vh, 15rem); }
-    .packet > div { display: flex; flex-direction: column; justify-content: space-between; padding: clamp(.6rem, 1.4vw, 1.5rem); min-width: 0; border-right: 1px solid var(--ink); }
+    .packet { display: grid; grid-template-columns: .7fr 1.45fr 1.9fr 1fr; width: 100%; height: clamp(5rem, 10vh, 8rem); border: 2px solid var(--ink); }
+    .packet > div { display: grid; place-items: center; min-width: 0; border-right: 1px solid var(--ink); }
     .packet > div:last-child { border-right: 0; }
-    .packet strong { font-size: clamp(1.3rem, 3vw, 3rem); line-height: 1; }
+    .packet strong { font-size: clamp(1.1rem, 1.8vw, 2rem); line-height: 1; }
     .packet .magic { background: var(--signal); color: var(--paper); }
-    .packet .label { font-size: var(--small); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-
-    /* Electronics path diagram: no train icons are used as stand-ins for hardware. */
-    .route { display: grid; grid-template-columns: 1fr .85fr 1fr .85fr 1fr .85fr 1fr; align-items: center; margin-top: var(--sbb-spacing-fixed-14x, 3.5rem); }
-    .node { min-width: 0; border-top: 4px solid var(--ink); padding-top: var(--sbb-spacing-fixed-4x, 1rem); }
-    .node.radio { border-color: var(--signal); }
-    .node strong { display: block; font-size: clamp(1.1rem, 2.4vw, 2.5rem); line-height: 1.05; }
-    .node span { display: block; margin-top: var(--sbb-spacing-fixed-2x, .5rem); font-size: var(--small); color: var(--muted); }
-    .connector { min-width: 0; display: grid; gap: var(--sbb-spacing-fixed-2x, .5rem); align-content: center; padding: 0 var(--sbb-spacing-fixed-2x, .5rem); }
-    .connector .line { height: 2px; background: var(--ink); position: relative; }
-    .connector .line::after { content: ""; position: absolute; right: 0; top: -4px; border-left: 7px solid var(--ink); border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
-    .connector.radio-link .line { background: var(--signal); }
-    .connector.radio-link .line::after { border-left-color: var(--signal); }
-    .connector span { font-size: clamp(.7rem, .9vw, .94rem); color: var(--muted); white-space: nowrap; text-align: center; }
-    .conversion { font-size: clamp(1.3rem, 2.6vw, 2.7rem); margin-top: var(--sbb-spacing-fixed-16x, 4rem); letter-spacing: -.025em; }
-    .conversion b { color: var(--signal); font-weight: 700; }
+    /* Only the modem's ASCII boundary is emphasized. */
+    .transport { display: grid; grid-template-columns: 1fr .22fr 1fr .22fr 1fr; align-items: center; margin-top: var(--sbb-spacing-fixed-16x, 4rem); }
+    .stage { min-width: 0; border-top: 4px solid var(--ink); padding-top: var(--sbb-spacing-fixed-5x, 1.25rem); }
+    .stage.ascii { border-color: var(--signal); }
+    .stage strong { display: block; font-size: clamp(2rem, 3.5vw, 4rem); line-height: 1; letter-spacing: -.045em; }
+    .stage.ascii strong { color: var(--signal); }
+    .stage span { display: block; margin-top: var(--sbb-spacing-fixed-5x, 1.25rem); color: var(--muted); font-size: clamp(1.15rem, 1.8vw, 2rem); }
+    .arrow { height: 2px; background: var(--ink); margin: 0 var(--sbb-spacing-fixed-4x, 1rem); position: relative; }
+    .arrow::after { content: ""; position: absolute; right: 0; top: -5px; border-left: 9px solid var(--ink); border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
 
     /* Results are set as type and rules, not dashboard cards. */
     .result-head { display: flex; align-items: baseline; gap: var(--sbb-spacing-fixed-6x, 1.5rem); margin-bottom: var(--sbb-spacing-fixed-14x, 3.5rem); }
     .result-head .count { color: var(--signal); font-size: clamp(5rem, 15vw, 15rem); line-height: .8; font-weight: 700; letter-spacing: -.1em; }
-    .result-head .result-word { font-size: clamp(2rem, 4vw, 4.5rem); font-weight: 700; }
+    .result-head .result-word { font-size: clamp(1.2rem, 2vw, 2.2rem); font-weight: 700; text-transform: uppercase; }
     .metrics { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--ink); }
     .metric { border-right: 1px solid var(--rule); padding: var(--sbb-spacing-fixed-5x, 1.25rem) var(--sbb-spacing-fixed-5x, 1.25rem) 0 0; }
     .metric:last-child { border-right: 0; }
     .metric strong { display: block; color: var(--signal); font-size: clamp(2.2rem, 4vw, 4.5rem); line-height: 1; }
     .metric span { display: block; font-size: var(--small); color: var(--muted); margin-top: var(--sbb-spacing-fixed-2x, .5rem); text-transform: uppercase; letter-spacing: .07em; }
-    .run-command { font-size: clamp(.8rem, 1.2vw, 1.2rem); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 
     .next-list { list-style: none; margin: var(--sbb-spacing-fixed-14x, 3.5rem) 0 0; padding: 0; border-top: 1px solid var(--ink); }
     .next-list li { display: grid; grid-template-columns: clamp(3rem, 8vw, 8rem) 1fr; gap: var(--sbb-spacing-fixed-4x, 1rem); align-items: baseline; padding: clamp(.6rem, 1.6vh, 1.4rem) 0; border-bottom: 1px solid var(--rule); font-size: clamp(1.5rem, 3.2vw, 3.4rem); line-height: 1.1; }
@@ -117,55 +107,48 @@
   <main id="deck" aria-label="MAVLink migration slides">
     <section class="slide active" id="slide-1" aria-labelledby="title-1">
       <sbb-container color="transparent" expanded class="page"><div class="slide-content">
-        <div class="folio"><span>ARSEM / PACKET LINKS</span><span>01 / 04</span></div>
+        <div class="folio"><span>ARSEM / MAVLINK</span><span>01 / 04</span></div>
         <div class="slide-middle cover">
-          <div><div class="small-label reveal">Microcontrollers · mavlink-packetization</div><sbb-title level="1" visual-level="1" id="title-1" class="hero-title reveal">MAVLink.<br>Every link.</sbb-title></div>
-          <div class="packet reveal" role="img" aria-label="MAVLink 2 frame: start byte FD, header, payload, and CRC"><div class="magic"><strong>FD</strong><span class="label">Start</span></div><div><strong>01</strong><span class="label">Header</span></div><div><strong>···</strong><span class="label">Payload</span></div><div><strong>✓</strong><span class="label">CRC</span></div></div>
+          <div><sbb-title level="1" visual-level="1" id="title-1" class="hero-title reveal">One frame.<br>Every link.</sbb-title></div>
+          <div class="packet reveal" role="img" aria-label="MAVLink 2 frame: FD start byte, header, payload, and CRC"><div class="magic"><strong>FD</strong></div><div><strong>HEADER</strong></div><div><strong>PAYLOAD</strong></div><div><strong>CRC</strong></div></div>
         </div>
-        <div class="slide-bottom"><span>JSON + TEXT → MAVLINK 2</span><span>26 SEP 2026</span></div>
-        <aside class="speaker-note" hidden>Previously the Pi, LoRa bridge, and servo code used incompatible JSON or text packet paths. This branch replaces the active paths with MAVLink 2 frames. The diagram shows the frame boundary: start byte, header, payload, and checksum. The XML dialect is the shared contract. The LoRa modem still needs ASCII AT commands, which is handled at its boundary only.</aside>
+        <aside class="speaker-note" hidden>Previously the Pi, LoRa bridge, and servo code used incompatible JSON or text packet paths. This branch replaces the active paths with MAVLink 2 frames. The strip shows the frame boundary: FD start byte, header, payload, and checksum. The XML dialect is the shared contract. The LoRa modem still needs ASCII AT commands, which are handled at its boundary only.</aside>
       </div></sbb-container>
     </section>
     <section class="slide" id="slide-2" aria-labelledby="title-2">
       <sbb-container color="transparent" expanded class="page"><div class="slide-content">
-        <div class="folio"><span>ARSEM / PACKET LINKS</span><span>02 / 04</span></div>
+        <div class="folio"><span>ARSEM / MAVLINK</span><span>02 / 04</span></div>
         <div class="slide-middle">
-          <sbb-title level="2" visual-level="2" id="title-2" class="section-title reveal">One frame. Three links.</sbb-title>
-          <div class="route reveal" aria-label="Ground to radio pair to Pi to servo link diagram">
-            <div class="node"><strong>Ground</strong><span>command</span></div>
-            <div class="connector radio-link"><span>LoRa / Base64</span><div class="line"></div></div>
-            <div class="node radio"><strong>Radio pair</strong><span>AT+SEND</span></div>
-            <div class="connector"><span>raw MAVLink</span><div class="line"></div></div>
-            <div class="node"><strong>Pi</strong><span>router</span></div>
-            <div class="connector"><span>raw MAVLink</span><div class="line"></div></div>
-            <div class="node"><strong>Servo</strong><span>Pico</span></div>
+          <sbb-title level="2" visual-level="2" id="title-2" class="section-title reveal">LoRa boundary.</sbb-title>
+          <div class="transport reveal" role="img" aria-label="A 26-byte MAVLink frame becomes 36 Base64 characters at the LoRa modem, then returns to the same 26-byte frame">
+            <div class="stage"><strong>MAVLink</strong><span>26 B</span></div>
+            <div class="arrow" aria-hidden="true"></div>
+            <div class="stage ascii"><strong>Base64</strong><span>36 chars</span></div>
+            <div class="arrow" aria-hidden="true"></div>
+            <div class="stage"><strong>MAVLink</strong><span>26 B</span></div>
           </div>
-          <div class="conversion reveal">26 B <b>→ 36 chars →</b> 26 B</div>
         </div>
-        <div class="slide-bottom"><span>BASE64 ONLY AT THE RYLR998</span><span>02 / 04</span></div>
-        <aside class="speaker-note" hidden>Follow the command from ground to the servo board. The gateways place one complete MAVLink frame inside the RYLR998 ASCII AT+SEND payload, then restore the same binary bytes on the other side. The Pi router and servo USB link carry raw frames without JSON or Base64. The example setpoint is 26 bytes as a frame and 36 Base64 characters on the radio interface. The arrow is a transport view, not a measured RF trace.</aside>
+        <aside class="speaker-note" hidden>The gateways place one complete MAVLink frame inside the RYLR998 ASCII AT+SEND payload, then restore the same binary bytes on the other side. The Pi router and servo USB link carry raw frames without JSON or Base64. The example setpoint is 26 bytes as a frame and 36 Base64 characters on the radio interface. The arrows show encoding and decoding, not a measured RF trace.</aside>
       </div></sbb-container>
     </section>
     <section class="slide" id="slide-3" aria-labelledby="title-3">
       <sbb-container color="transparent" expanded class="page"><div class="slide-content">
-        <div class="folio"><span>ARSEM / HOST TESTS</span><span>03 / 04</span></div>
+        <div class="folio"><span>ARSEM / MAVLINK</span><span>03 / 04</span></div>
         <div class="slide-middle">
-          <sbb-title level="2" visual-level="2" id="title-3" class="section-title reveal">Packet tests.</sbb-title>
-          <div class="result-head reveal"><strong class="count">8/8</strong><span class="result-word">pass</span></div>
-          <div class="metrics reveal"><div class="metric"><strong>100/100</strong><span>serial reassembled</span></div><div class="metric"><strong>100/100</strong><span>radio envelopes</span></div><div class="metric"><strong>100/100</strong><span>corruption rejected</span></div></div>
+          <sbb-title level="2" visual-level="2" id="title-3" class="section-title reveal">Host tests.</sbb-title>
+          <div class="result-head reveal"><strong class="count">8/8</strong><span class="result-word">PASS</span></div>
+          <div class="metrics reveal"><div class="metric"><strong>100/100</strong><span>serial</span></div><div class="metric"><strong>100/100</strong><span>Base64</span></div><div class="metric"><strong>100/100</strong><span>CRC reject</span></div></div>
         </div>
-        <div class="slide-bottom"><span class="run-command">python -m unittest discover -s tests -v</span><span>HOST ONLY</span></div>
-        <aside class="speaker-note" hidden>All eight host unit tests pass. The serial test feeds 100 frames in three-byte chunks and checks that they are recovered in order. The LoRa test round trips 100 intact Base64 envelopes and deliberately corrupts 100 frames; all damaged frames fail CRC validation. The C and Python implementations emit identical bytes. These are deterministic software tests, not radio delivery or range measurements. Run the command shown at the bottom to capture your own terminal screenshot.</aside>
+        <aside class="speaker-note" hidden>All eight host unit tests pass. The serial test feeds 100 frames in three-byte chunks and checks that they are recovered in order. The LoRa test round trips 100 intact Base64 envelopes and deliberately corrupts 100 frames; all damaged frames fail CRC validation. The C and Python implementations emit identical bytes. These are deterministic software tests, not radio delivery or range measurements. Run python -m unittest discover -s tests -v from the repository root for a terminal screenshot.</aside>
       </div></sbb-container>
     </section>
     <section class="slide" id="slide-4" aria-labelledby="title-4">
       <sbb-container color="transparent" expanded class="page"><div class="slide-content">
-        <div class="folio"><span>ARSEM / NEXT RUN</span><span>04 / 04</span></div>
+        <div class="folio"><span>ARSEM / MAVLINK</span><span>04 / 04</span></div>
         <div class="slide-middle">
-          <sbb-title level="2" visual-level="2" id="title-4" class="section-title reveal">Next: on-board evidence.</sbb-title>
-          <ol class="next-list reveal"><li><span class="num">01</span><span>Build + flash</span></li><li><span class="num">02</span><span>Measure RF loss + latency</span></li><li><span class="num">03</span><span>Check motor + RC override</span></li></ol>
+          <sbb-title level="2" visual-level="2" id="title-4" class="section-title reveal">Next: hardware.</sbb-title>
+          <ol class="next-list reveal"><li><span class="num">01</span><span>Flash</span></li><li><span class="num">02</span><span>Measure</span></li><li><span class="num">03</span><span>Verify</span></li></ol>
         </div>
-        <div class="slide-bottom"><span>HOST TESTS → HARDWARE TRIAL</span><span>04 / 04</span></div>
         <aside class="speaker-note" hidden>The host evidence establishes frame encoding, routing, reassembly, CRC rejection, and command validation. The firmware has not been built or run on boards in this checkout because the Pico SDK and ARM toolchain were unavailable in the initial environment. Next we need to build and flash both Picos, measure packet loss and latency over actual radio hardware, and verify motor motion and RC override. The current minimal parser supports the eight boat-specific messages plus HEARTBEAT and accepts unsigned MAVLink 2 frames.</aside>
       </div></sbb-container>
     </section>
