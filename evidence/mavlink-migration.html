@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1728">
+  <title>ARSEM | MAVLink packet migration</title>
+  <style>
+    :root {
+      --bg: #0d1728;
+      --panel: #172740;
+      --line: #2d4261;
+      --ink: #f4f7fb;
+      --muted: #9aafc9;
+      --mint: #53d6a3;
+      --amber: #ffc875;
+      --slide-padding: clamp(1rem, 4vw, 4rem);
+      --content-gap: clamp(0.5rem, 2vw, 2rem);
+      --element-gap: clamp(0.25rem, 1vw, 1rem);
+      --title-size: clamp(1.5rem, 5vw, 4rem);
+      --h2-size: clamp(1.25rem, 3.5vw, 2.5rem);
+      --h3-size: clamp(1rem, 2.5vw, 1.75rem);
+      --body-size: clamp(0.75rem, 1.5vw, 1.125rem);
+      --small-size: clamp(0.65rem, 1vw, 0.875rem);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow-x: hidden; }
+    html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font-family: "Noto Sans Mono", "DejaVu Sans Mono", ui-monospace, monospace; }
+    button { font: inherit; }
+    .slide {
+      width: 100vw; height: 100vh; height: 100dvh; overflow: hidden;
+      scroll-snap-align: start; display: flex; flex-direction: column; position: relative;
+      background: radial-gradient(circle at 85% 12%, #193350 0, transparent 36%), var(--bg);
+    }
+    .slide::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .22;
+      background-image: linear-gradient(#8babc21a 1px, transparent 1px), linear-gradient(90deg, #8babc21a 1px, transparent 1px);
+      background-size: clamp(28px, 4vw, 52px) clamp(28px, 4vw, 52px);
+    }
+    .slide-content {
+      flex: 1; display: flex; flex-direction: column; justify-content: center;
+      max-height: 100%; overflow: hidden; padding: var(--slide-padding); position: relative; z-index: 1;
+    }
+    .card, .container, .content-box { max-width: min(90vw, 1000px); max-height: min(80vh, 700px); }
+    .feature-list, .bullet-list { gap: clamp(.4rem, 1vh, 1rem); }
+    .feature-list li, .bullet-list li { font-size: var(--body-size); line-height: 1.4; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: clamp(.5rem, 1.5vw, 1rem); }
+    img, .image-container { max-width: 100%; max-height: min(50vh, 400px); object-fit: contain; }
+
+    .topline, .bottomline { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .topline { color: var(--muted); text-transform: uppercase; letter-spacing: .16em; font-size: var(--small-size); }
+    .topline .brand { color: var(--mint); }
+    .bottomline { color: var(--muted); font-size: var(--small-size); border-top: 1px solid var(--line); padding-top: clamp(.5rem, 1.2vh, 1rem); }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(2.4rem, 6.9vw, 6.6rem); line-height: .98; letter-spacing: -.065em; max-width: 11ch; }
+    h2 { font-size: var(--h2-size); line-height: 1.08; letter-spacing: -.045em; }
+    h3 { font-size: var(--h3-size); letter-spacing: -.025em; }
+    p { font-size: var(--body-size); line-height: 1.46; }
+    .eyebrow { color: var(--mint); text-transform: uppercase; letter-spacing: .2em; font-size: var(--small-size); }
+    .accent { color: var(--mint); }
+    .amber { color: var(--amber); }
+    .muted { color: var(--muted); }
+
+    .hero { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(230px, .65fr); align-items: center; gap: clamp(1rem, 6vw, 7rem); flex: 1; }
+    .hero-copy { display: grid; gap: clamp(.65rem, 2.5vh, 2rem); }
+    .hero-copy p { max-width: 50ch; color: var(--muted); }
+    .hero-stamp { border: 1px solid var(--line); background: #101e33d9; border-radius: clamp(12px, 2vw, 24px); padding: clamp(1rem, 3vw, 2.5rem); box-shadow: 0 24px 65px #0003; }
+    .hero-stamp .hex { color: var(--mint); font-size: clamp(3rem, 9vw, 8rem); font-weight: 700; line-height: 1; letter-spacing: -.1em; }
+    .hero-stamp .tiny { margin-top: clamp(.7rem, 2vh, 1.5rem); font-size: var(--small-size); color: var(--muted); line-height: 1.7; }
+    .hero-stamp .tiny strong { color: var(--ink); font-weight: 500; }
+
+    .slide-heading { display: grid; gap: clamp(.35rem, 1vh, .8rem); margin: clamp(.6rem, 2.5vh, 2rem) 0 clamp(.7rem, 3vh, 2.2rem); }
+    .slide-heading p { color: var(--muted); }
+    .path { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(.5rem, 2vw, 1.5rem); align-items: stretch; }
+    .path-card { min-width: 0; border: 1px solid var(--line); border-radius: clamp(12px, 2vw, 22px); background: var(--panel); padding: clamp(.75rem, 2.2vw, 2rem); display: flex; flex-direction: column; justify-content: space-between; min-height: clamp(145px, 27vh, 250px); }
+    .path-card.radio { border-color: #866847; background: #292b32; }
+    .path-card .step { font-size: var(--small-size); color: var(--muted); letter-spacing: .12em; }
+    .path-card .label { color: var(--mint); font-size: var(--h3-size); line-height: 1.15; }
+    .path-card.radio .label { color: var(--amber); }
+    .path-card p { color: var(--muted); }
+    .path-card strong { color: var(--ink); font-weight: 500; }
+    .truth-strip { display: flex; justify-content: space-between; gap: clamp(.5rem, 2vw, 2rem); margin-top: clamp(.65rem, 2.5vh, 1.8rem); padding-top: clamp(.5rem, 1.5vh, 1rem); border-top: 1px solid var(--line); }
+    .truth-strip p { max-width: 44ch; color: var(--muted); }
+    .truth-strip b { color: var(--ink); font-weight: 500; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(.5rem, 1.5vw, 1rem); }
+    .stat { border: 1px solid var(--line); background: var(--panel); border-radius: clamp(10px, 1.5vw, 18px); padding: clamp(.7rem, 1.8vw, 1.6rem); min-height: clamp(125px, 23vh, 205px); display: flex; flex-direction: column; justify-content: space-between; }
+    .stat .number { font-size: clamp(2rem, 4.5vw, 4.4rem); line-height: 1; color: var(--mint); letter-spacing: -.08em; }
+    .stat small { display: block; color: var(--muted); font-size: var(--small-size); line-height: 1.45; }
+    .terminal { margin-top: clamp(.7rem, 3vh, 2rem); border: 1px solid var(--line); border-radius: clamp(10px, 1.2vw, 18px); overflow: hidden; background: #07101d; }
+    .terminal-head { display: flex; gap: .45rem; align-items: center; padding: clamp(.45rem, 1vh, .7rem) clamp(.7rem, 1.5vw, 1.3rem); border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--small-size); }
+    .terminal-head i { width: .5rem; height: .5rem; border-radius: 50%; display: inline-block; background: var(--mint); }
+    .terminal code { display: block; padding: clamp(.7rem, 1.7vw, 1.5rem); font-size: clamp(.7rem, 1.45vw, 1.15rem); color: var(--ink); white-space: nowrap; }
+    .terminal code em { color: var(--mint); font-style: normal; }
+
+    .outcomes { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(.7rem, 2vw, 2rem); }
+    .outcome { border: 1px solid var(--line); background: var(--panel); border-radius: clamp(12px, 2vw, 22px); padding: clamp(.8rem, 2.5vw, 2.4rem); }
+    .outcome h3 { color: var(--mint); margin-bottom: clamp(.7rem, 2vh, 1.5rem); }
+    .outcome.pending h3 { color: var(--amber); }
+    .outcome ul { padding: 0; margin: 0; list-style: none; display: grid; gap: clamp(.55rem, 2vh, 1.4rem); }
+    .outcome li { font-size: var(--body-size); line-height: 1.4; padding-left: 1.3em; position: relative; }
+    .outcome li::before { content: "→"; color: var(--mint); position: absolute; left: 0; }
+    .outcome.pending li::before { color: var(--amber); }
+    .scope { color: var(--muted); font-size: var(--small-size); padding-top: clamp(.5rem, 1.5vh, 1rem); }
+
+    .controls { position: fixed; z-index: 20; bottom: clamp(.4rem, 1.4vh, 1rem); right: clamp(.6rem, 2vw, 1.5rem); display: flex; align-items: center; gap: .4rem; }
+    .controls button { color: var(--ink); background: #172740e8; border: 1px solid var(--line); border-radius: 999px; min-width: 2.2rem; min-height: 2.2rem; cursor: pointer; }
+    .controls button:hover, .controls button:focus-visible { border-color: var(--mint); outline: none; }
+    .controls .notes-button { padding: 0 .9rem; font-size: var(--small-size); }
+    .progress { position: fixed; z-index: 19; bottom: 0; left: 0; height: 3px; background: var(--mint); width: 25%; transition: width .3s ease; }
+    .notes-panel { position: fixed; z-index: 30; left: 4vw; right: 4vw; bottom: 5rem; background: #07101df5; border: 1px solid var(--mint); border-radius: 18px; padding: clamp(.8rem, 2vw, 1.5rem); box-shadow: 0 20px 80px #000a; }
+    .notes-panel[hidden] { display: none; }
+    .notes-panel strong { color: var(--mint); display: block; margin-bottom: .6rem; font-size: var(--small-size); text-transform: uppercase; letter-spacing: .12em; }
+    .notes-panel p { font-size: clamp(.75rem, 1.2vw, 1rem); }
+    .speaker-note[hidden] { display: none; }
+    .js .reveal { opacity: 0; transform: translateY(12px); transition: opacity .45s ease, transform .45s ease; }
+    .js .is-active .reveal { opacity: 1; transform: none; }
+    .js .is-active .reveal:nth-child(2) { transition-delay: .09s; }
+    .js .is-active .reveal:nth-child(3) { transition-delay: .18s; }
+
+    @media (max-width: 700px) {
+      .hero { grid-template-columns: 1fr; gap: .7rem; }
+      .hero-stamp { display: none; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat { min-height: 112px; }
+      .truth-strip { display: block; }
+      .truth-strip p + p { margin-top: .3rem; }
+      .outcomes { gap: .5rem; }
+    }
+    @media (max-width: 600px) {
+      :root { --title-size: clamp(1.25rem, 7vw, 2.5rem); }
+      .grid { grid-template-columns: 1fr; }
+      .path { grid-template-columns: 1fr; gap: .45rem; }
+      .path-card { min-height: 0; padding: .7rem; display: grid; grid-template-columns: auto 1fr; column-gap: .8rem; align-items: center; }
+      .path-card .step { grid-row: 1 / 3; }
+      .path-card p { display: none; }
+      .outcomes { grid-template-columns: 1fr; }
+      .outcome { padding: .65rem .8rem; }
+      .outcome h3 { margin-bottom: .35rem; }
+      .outcome ul { gap: .2rem; }
+      .scope { display: none; }
+      .terminal code { white-space: normal; overflow-wrap: anywhere; }
+      .controls .notes-button { display: none; }
+    }
+    @media (max-height: 700px) {
+      :root { --slide-padding: clamp(.75rem, 3vw, 2rem); --content-gap: clamp(.4rem, 1.5vw, 1rem); --title-size: clamp(1.25rem, 4.5vw, 2.5rem); --h2-size: clamp(1rem, 3vw, 1.75rem); }
+      .slide-heading { margin: .5rem 0 .8rem; }
+      .path-card { min-height: 140px; }
+      .stat { min-height: 110px; }
+    }
+    @media (max-height: 600px) {
+      :root { --slide-padding: clamp(.5rem, 2.5vw, 1.5rem); --content-gap: clamp(.3rem, 1vw, .75rem); --title-size: clamp(1.1rem, 4vw, 2rem); --body-size: clamp(.7rem, 1.2vw, .95rem); }
+      .path-card { min-height: 100px; }
+      .stat { min-height: 90px; }
+      .slide-heading p, .truth-strip, .scope { display: none; }
+    }
+    @media (max-height: 500px) {
+      :root { --slide-padding: clamp(.4rem, 2vw, 1rem); --title-size: clamp(1rem, 3.5vw, 1.5rem); --h2-size: clamp(.9rem, 2.5vw, 1.25rem); --body-size: clamp(.65rem, 1vw, .85rem); }
+      .keyboard-hint, .decorative { display: none; }
+      .path-card { min-height: 80px; }
+      .stat { min-height: 72px; }
+      .terminal { margin-top: .45rem; }
+      .terminal code { padding: .45rem .7rem; }
+      .outcome ul { gap: .18rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .2s !important; }
+      html { scroll-behavior: auto; }
+    }
+    @media print {
+      html, body { height: auto; overflow: visible; }
+      .slide { break-after: page; height: 100vh; }
+      .controls, .progress, .notes-panel { display: none !important; }
+      .js .reveal { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <main id="deck" aria-label="MAVLink migration presentation">
+    <section class="slide is-active" id="slide-1" aria-labelledby="title-1">
+      <div class="slide-content">
+        <div class="topline"><span class="brand">ARSEM / ENGINEERING UPDATE</span><span>01 / 04</span></div>
+        <div class="hero">
+          <div class="hero-copy">
+            <div class="eyebrow reveal">Packetization migration</div>
+            <h1 class="reveal" id="title-1">One packet format, <span class="accent">end to end.</span></h1>
+            <p class="reveal">The Pi, servo controller, and LoRa gateways now exchange MAVLink 2 frames. The radio modem is the only ASCII boundary.</p>
+          </div>
+          <div class="hero-stamp reveal" aria-hidden="true"><div class="hex">FD</div><div class="tiny"><strong>MAVLink 2 start byte</strong><br>Branch: mavlink-packetization<br>Commit: 41bb311</div></div>
+        </div>
+        <div class="bottomline"><span>MICROCONTROLLERS / SEPT 2026</span><span class="keyboard-hint">ARROWS TO NAVIGATE · N FOR NOTES</span></div>
+        <aside class="speaker-note" hidden>We had JSON and text packet paths that did not agree across the Pi, radio, and servo board. This branch gives those active paths one MAVLink 2 wire format. The only translation is Base64 around the RYLR998 modem, because that modem accepts ASCII AT commands. This is a committed local branch, not a hardware test claim.</aside>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-2" aria-labelledby="title-2">
+      <div class="slide-content">
+        <div class="topline"><span class="brand">ARSEM / MIGRATION PATH</span><span>02 / 04</span></div>
+        <div class="slide-heading"><div class="eyebrow reveal">The wire path</div><h2 class="reveal" id="title-2">Raw frame → ASCII envelope → raw frame</h2><p class="reveal">The payload survives the radio boundary unchanged.</p></div>
+        <div class="path reveal" aria-label="Three stages of the packet link">
+          <div class="path-card"><div class="step">01 / PI + SERVO</div><div class="label">MAVLink 2</div><p>Binary USB serial.<br><strong>CRC checked.</strong></p></div>
+          <div class="path-card radio"><div class="step">02 / RYLR998</div><div class="label">Base64 only here</div><p>One complete frame in<br><strong>AT+SEND</strong>.</p></div>
+          <div class="path-card"><div class="step">03 / RECEIVER</div><div class="label">Same bytes</div><p>Decode, check CRC,<br><strong>validate command.</strong></p></div>
+        </div>
+        <div class="truth-strip reveal"><p><b>Before:</b> incompatible JSON and text paths, including a disconnected servo handler.</p><p><b>Now:</b> the 26-byte setpoint example becomes 36 ASCII characters over LoRa.</p></div>
+        <div class="bottomline"><span>ONE XML DIALECT · EIGHT CUSTOM MESSAGES</span><span>02 / 04</span></div>
+        <aside class="speaker-note" hidden>Walk left to right. On binary-safe USB and UART links we send the MAVLink frame directly. At the RYLR998 interface, a complete frame is Base64 encoded into one AT+SEND packet, then decoded at the receiving gateway. The example setpoint is 26 binary bytes and 36 ASCII characters. The servo accepts a command only after frame and command checks; the old cJSON paths are no longer active.</aside>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-3" aria-labelledby="title-3">
+      <div class="slide-content">
+        <div class="topline"><span class="brand">ARSEM / HOST VERIFICATION</span><span>03 / 04</span></div>
+        <div class="slide-heading"><div class="eyebrow reveal">Executed tests</div><h2 class="reveal" id="title-3">Packet behavior is repeatable.</h2><p class="reveal">Results from software tests on this checkout; no RF hardware was used.</p></div>
+        <div class="stats reveal">
+          <div class="stat"><div class="number">8/8</div><small>Unit tests passed</small></div>
+          <div class="stat"><div class="number">100/100</div><small>Fragmented serial frames recovered</small></div>
+          <div class="stat"><div class="number">100/100</div><small>Intact LoRa envelopes round tripped</small></div>
+          <div class="stat"><div class="number">100/100</div><small>Damaged frames rejected by CRC</small></div>
+        </div>
+        <div class="terminal reveal" aria-label="Test command"><div class="terminal-head"><i></i><span>RUN FROM THE REPOSITORY ROOT</span></div><code>python -m unittest discover -s tests -v <em>→ OK</em></code></div>
+        <div class="bottomline"><span>C AND PYTHON GENERATED IDENTICAL FRAME BYTES</span><span>03 / 04</span></div>
+        <aside class="speaker-note" hidden>The tests are repeatable on a host computer. They cover serial chunking and reassembly, Base64 radio wrapping, corrupted packet rejection, the MicroPython gateway validator, Pi routing, and C/Python frame agreement. The 100 out of 100 figures are deterministic test cases, not measured radio delivery rates. For a terminal screenshot, run the command shown here from the repository root.</aside>
+      </div>
+    </section>
+
+    <section class="slide" id="slide-4" aria-labelledby="title-4">
+      <div class="slide-content">
+        <div class="topline"><span class="brand">ARSEM / HANDOFF</span><span>04 / 04</span></div>
+        <div class="slide-heading"><div class="eyebrow reveal">Current boundary</div><h2 class="reveal" id="title-4">Ready for a board-level trial.</h2><p class="reveal">The code and host evidence are committed together on the new branch.</p></div>
+        <div class="outcomes reveal">
+          <div class="outcome"><h3>Verified here</h3><ul><li>MAVLink 2 frames on active Pi and servo packet paths</li><li>LoRa conversion confined to the modem interface</li><li>CRC, target, range, RC authority, and duplicate checks</li></ul></div>
+          <div class="outcome pending"><h3>Next field run</h3><ul><li>Build and flash both Pico firmware targets</li><li>Measure real radio loss, latency, and range</li><li>Confirm motor motion and RC override on hardware</li></ul></div>
+        </div>
+        <div class="scope reveal">Current parser scope: eight boat messages + HEARTBEAT; unsigned MAVLink 2 frames.</div>
+        <div class="bottomline"><span>BRANCH: MAVLINK-PACKETIZATION</span><span>04 / 04</span></div>
+        <aside class="speaker-note" hidden>The branch is ready for a board-level trial, with the software packet path and evidence committed together. The host test proves bytes and validation behavior, but this machine does not have the Pico SDK or ARM toolchain, so firmware build and hardware measurements are still outstanding. The parser deliberately supports the eight boat messages plus HEARTBEAT and unsigned MAVLink 2 frames. The next useful evidence is a flashed-board run measuring actual radio delivery and motor response.</aside>
+      </div>
+    </section>
+  </main>
+
+  <nav class="controls" aria-label="Presentation controls">
+    <button type="button" id="prev" aria-label="Previous slide">←</button>
+    <button type="button" id="next" aria-label="Next slide">→</button>
+    <button type="button" id="notes-toggle" class="notes-button" aria-expanded="false" aria-controls="notes-panel">Notes (N)</button>
+  </nav>
+  <div id="progress" class="progress" aria-hidden="true"></div>
+  <div id="notes-panel" class="notes-panel" hidden aria-live="polite"><strong>Speaker notes</strong><p id="notes-text"></p></div>
+
+  <script>
+    document.documentElement.classList.add('js');
+    class PresentationController {
+      constructor() {
+        this.slides = [...document.querySelectorAll('.slide')];
+        this.index = 0;
+        this.notesPanel = document.getElementById('notes-panel');
+        this.notesToggle = document.getElementById('notes-toggle');
+        this.lastWheel = 0;
+        this.touchY = null;
+        document.getElementById('prev').addEventListener('click', () => this.go(this.index - 1));
+        document.getElementById('next').addEventListener('click', () => this.go(this.index + 1));
+        this.notesToggle.addEventListener('click', () => this.toggleNotes());
+        document.addEventListener('keydown', event => {
+          if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); this.go(this.index + 1); }
+          if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) { event.preventDefault(); this.go(this.index - 1); }
+          if (event.key.toLowerCase() === 'n') this.toggleNotes();
+          if (event.key === 'Escape' && !this.notesPanel.hidden) this.toggleNotes();
+        });
+        document.addEventListener('wheel', event => {
+          if (!this.notesPanel.hidden) return;
+          const now = Date.now();
+          if (Math.abs(event.deltaY) < 15 || now - this.lastWheel < 600) return;
+          this.lastWheel = now;
+          this.go(this.index + Math.sign(event.deltaY));
+        }, { passive: true });
+        document.addEventListener('touchstart', event => { this.touchY = event.changedTouches[0].screenY; }, { passive: true });
+        document.addEventListener('touchend', event => {
+          if (this.touchY === null) return;
+          const delta = this.touchY - event.changedTouches[0].screenY;
+          if (Math.abs(delta) > 50) this.go(this.index + Math.sign(delta));
+          this.touchY = null;
+        }, { passive: true });
+        const observer = new IntersectionObserver(entries => {
+          entries.forEach(entry => { if (entry.isIntersecting) this.activate(this.slides.indexOf(entry.target)); });
+        }, { threshold: .6 });
+        this.slides.forEach(slide => observer.observe(slide));
+        const hashIndex = Number(location.hash.replace('#slide-', '')) - 1;
+        if (hashIndex >= 0 && hashIndex < this.slides.length) this.go(hashIndex, false);
+        else this.activate(0);
+      }
+      activate(index) {
+        if (index < 0) return;
+        this.index = index;
+        this.slides.forEach((slide, slideIndex) => slide.classList.toggle('is-active', slideIndex === index));
+        document.getElementById('progress').style.width = `${(index + 1) / this.slides.length * 100}%`;
+        history.replaceState(null, '', `#slide-${index + 1}`);
+        if (!this.notesPanel.hidden) this.showNotes();
+      }
+      go(index, smooth = true) {
+        const target = Math.max(0, Math.min(this.slides.length - 1, index));
+        this.slides[target].scrollIntoView({ behavior: smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches ? 'smooth' : 'auto' });
+        this.activate(target);
+      }
+      showNotes() { document.getElementById('notes-text').textContent = this.slides[this.index].querySelector('.speaker-note').textContent; }
+      toggleNotes() {
+        this.notesPanel.hidden = !this.notesPanel.hidden;
+        this.notesToggle.setAttribute('aria-expanded', String(!this.notesPanel.hidden));
+        if (!this.notesPanel.hidden) this.showNotes();
+      }
+    }
+    new PresentationController();
+  </script>
+</body>
+</html>
