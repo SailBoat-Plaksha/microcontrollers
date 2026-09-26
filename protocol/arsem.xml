@@ -1,0 +1,324 @@
+<?xml version="1.0"?>
+<mavlink>
+  <!--
+    ARSEM private MAVLink 2 dialect.
+
+    Message IDs 200000-200099 are reserved by this project for private use.
+    They are not an official MAVLink allocation and must be replaced if this
+    dialect is submitted for a public allocation.
+
+    Message names intentionally have no project prefix. Enum entries keep
+    their enum-name prefix because generated C identifiers share a namespace.
+  -->
+  <include>common.xml</include>
+  <version>3</version>
+  <dialect>200</dialect>
+
+  <enums>
+    <enum name="COMPONENT_ROLE">
+      <description>Logical role of a component in the boat system.</description>
+      <entry value="0" name="COMPONENT_ROLE_UNKNOWN">
+        <description>Role is unknown or has not been configured.</description>
+      </entry>
+      <entry value="1" name="COMPONENT_ROLE_BRAIN">
+        <description>Main computer responsible for navigation and mission control.</description>
+      </entry>
+      <entry value="2" name="COMPONENT_ROLE_ACTUATOR">
+        <description>Servo and motor controller.</description>
+      </entry>
+      <entry value="3" name="COMPONENT_ROLE_COMMS_SENSOR">
+        <description>Communications and sensor controller.</description>
+      </entry>
+      <entry value="4" name="COMPONENT_ROLE_GROUND_STATION">
+        <description>Operator CLI, GUI, or ground-control station.</description>
+      </entry>
+    </enum>
+
+    <enum name="CAPABILITY_FLAGS" bitmask="true">
+      <description>Functions implemented by a component.</description>
+      <entry value="1" name="CAPABILITY_FLAGS_ACTUATOR_CONTROL">
+        <description>Accepts actuator setpoints.</description>
+      </entry>
+      <entry value="2" name="CAPABILITY_FLAGS_SENSOR_TELEMETRY">
+        <description>Publishes sensor telemetry.</description>
+      </entry>
+      <entry value="4" name="CAPABILITY_FLAGS_LORA_GATEWAY">
+        <description>Provides a LoRa data link.</description>
+      </entry>
+      <entry value="8" name="CAPABILITY_FLAGS_SATCOM_GATEWAY">
+        <description>Provides a satellite data link.</description>
+      </entry>
+      <entry value="16" name="CAPABILITY_FLAGS_POWER_MANAGEMENT">
+        <description>Controls or reports system power modes.</description>
+      </entry>
+      <entry value="32" name="CAPABILITY_FLAGS_LOCAL_LOGGING">
+        <description>Can store telemetry locally.</description>
+      </entry>
+      <entry value="64" name="CAPABILITY_FLAGS_RC_OVERRIDE">
+        <description>Can accept direct radio-control authority.</description>
+      </entry>
+      <entry value="128" name="CAPABILITY_FLAGS_BUS_MASTER">
+        <description>Schedules access to the shared half-duplex bus.</description>
+      </entry>
+      <entry value="256" name="CAPABILITY_FLAGS_BUS_CLIENT">
+        <description>Uses grants from the shared half-duplex bus master.</description>
+      </entry>
+    </enum>
+
+    <enum name="ACTUATOR_ID">
+      <description>Controllable actuator on the sailboat.</description>
+      <entry value="0" name="ACTUATOR_ID_UNKNOWN">
+        <description>Unknown or unspecified actuator.</description>
+      </entry>
+      <entry value="1" name="ACTUATOR_ID_SAIL">
+        <description>Sail trim actuator.</description>
+      </entry>
+      <entry value="2" name="ACTUATOR_ID_RUDDER">
+        <description>Rudder actuator.</description>
+      </entry>
+    </enum>
+
+    <enum name="CONTROL_SOURCE">
+      <description>Source currently permitted to command an actuator.</description>
+      <entry value="0" name="CONTROL_SOURCE_NONE">
+        <description>No source has control.</description>
+      </entry>
+      <entry value="1" name="CONTROL_SOURCE_RC">
+        <description>Direct local radio control.</description>
+      </entry>
+      <entry value="2" name="CONTROL_SOURCE_AUTONOMOUS">
+        <description>Autonomous control from the main computer.</description>
+      </entry>
+      <entry value="3" name="CONTROL_SOURCE_REMOTE_OPERATOR">
+        <description>Remote operator command relayed through the main computer.</description>
+      </entry>
+      <entry value="4" name="CONTROL_SOURCE_FAILSAFE">
+        <description>Locally generated failsafe command.</description>
+      </entry>
+    </enum>
+
+    <enum name="COMMAND_RESULT">
+      <description>Result of applying the latest actuator command.</description>
+      <entry value="0" name="COMMAND_RESULT_ACCEPTED">
+        <description>Command was accepted and applied.</description>
+      </entry>
+      <entry value="1" name="COMMAND_RESULT_IN_PROGRESS">
+        <description>Command was accepted and the actuator is still moving.</description>
+      </entry>
+      <entry value="2" name="COMMAND_RESULT_DENIED">
+        <description>Command was denied by the current control-authority policy.</description>
+      </entry>
+      <entry value="3" name="COMMAND_RESULT_INVALID">
+        <description>Command contained an unsupported actuator, range, or value.</description>
+      </entry>
+      <entry value="4" name="COMMAND_RESULT_TIMEOUT">
+        <description>Command expired before or while it was being applied.</description>
+      </entry>
+      <entry value="5" name="COMMAND_RESULT_FAULT">
+        <description>Command could not be applied because of a hardware fault.</description>
+      </entry>
+    </enum>
+
+    <enum name="FAULT_FLAGS" bitmask="true">
+      <description>Faults common to the boat computers, links, sensors, and actuators.</description>
+      <entry value="1" name="FAULT_FLAGS_COMMUNICATION">
+        <description>Communication timeout or malformed traffic.</description>
+      </entry>
+      <entry value="2" name="FAULT_FLAGS_SENSOR">
+        <description>Sensor missing, stale, or outside its valid range.</description>
+      </entry>
+      <entry value="4" name="FAULT_FLAGS_ACTUATOR">
+        <description>Actuator feedback or motion fault.</description>
+      </entry>
+      <entry value="8" name="FAULT_FLAGS_UNDERVOLTAGE">
+        <description>Supply voltage is below its configured safe threshold.</description>
+      </entry>
+      <entry value="16" name="FAULT_FLAGS_OVERCURRENT">
+        <description>Current is above its configured safe threshold.</description>
+      </entry>
+      <entry value="32" name="FAULT_FLAGS_OVERTEMPERATURE">
+        <description>Temperature is above its configured safe threshold.</description>
+      </entry>
+      <entry value="64" name="FAULT_FLAGS_WATCHDOG">
+        <description>A watchdog reset or missed deadline occurred.</description>
+      </entry>
+      <entry value="128" name="FAULT_FLAGS_LEAK">
+        <description>Water ingress or leak was detected.</description>
+      </entry>
+    </enum>
+
+    <enum name="POWER_MODE_TYPE">
+      <description>Whole-boat power operating mode.</description>
+      <entry value="0" name="POWER_MODE_TYPE_FULL_ACTIVE">
+        <description>All configured systems are powered and active.</description>
+      </entry>
+      <entry value="1" name="POWER_MODE_TYPE_MISSION">
+        <description>Normal autonomous mission power profile.</description>
+      </entry>
+      <entry value="2" name="POWER_MODE_TYPE_LOW_POWER">
+        <description>Nonessential loads and telemetry rates are reduced.</description>
+      </entry>
+      <entry value="3" name="POWER_MODE_TYPE_SAFE">
+        <description>Only systems required to remain safe and recover are active.</description>
+      </entry>
+      <entry value="4" name="POWER_MODE_TYPE_SHUTDOWN">
+        <description>Orderly shutdown is in progress.</description>
+      </entry>
+    </enum>
+
+    <enum name="ENVIRONMENTAL_VALIDITY" bitmask="true">
+      <description>Fields that contain a valid measurement in ENVIRONMENTAL_SAMPLE.</description>
+      <entry value="1" name="ENVIRONMENTAL_VALIDITY_PH">
+        <description>The pH field is valid.</description>
+      </entry>
+      <entry value="2" name="ENVIRONMENTAL_VALIDITY_WATER_TEMPERATURE">
+        <description>The water temperature field is valid.</description>
+      </entry>
+      <entry value="4" name="ENVIRONMENTAL_VALIDITY_DISSOLVED_OXYGEN">
+        <description>The dissolved oxygen field is valid.</description>
+      </entry>
+      <entry value="8" name="ENVIRONMENTAL_VALIDITY_SALINITY">
+        <description>The salinity field is valid.</description>
+      </entry>
+      <entry value="16" name="ENVIRONMENTAL_VALIDITY_TURBIDITY">
+        <description>The turbidity field is valid.</description>
+      </entry>
+    </enum>
+
+    <enum name="LINK_TYPE">
+      <description>Physical link represented by LINK_STATUS.</description>
+      <entry value="0" name="LINK_TYPE_UNKNOWN">
+        <description>Unknown or unspecified link.</description>
+      </entry>
+      <entry value="1" name="LINK_TYPE_RS485">
+        <description>Onboard RS-485 bus.</description>
+      </entry>
+      <entry value="2" name="LINK_TYPE_LORA">
+        <description>Long-range LoRa radio link.</description>
+      </entry>
+      <entry value="3" name="LINK_TYPE_SATCOM">
+        <description>Satellite communications link.</description>
+      </entry>
+      <entry value="4" name="LINK_TYPE_USB">
+        <description>USB or local development serial link.</description>
+      </entry>
+    </enum>
+
+    <enum name="BUS_STREAM_FLAGS" bitmask="true">
+      <description>Classes of queued traffic that a bus client may transmit during a grant.</description>
+      <entry value="1" name="BUS_STREAM_FLAGS_CRITICAL">
+        <description>Critical fault, control, and acknowledgement traffic.</description>
+      </entry>
+      <entry value="2" name="BUS_STREAM_FLAGS_STATUS">
+        <description>Component, actuator, power, and link status.</description>
+      </entry>
+      <entry value="4" name="BUS_STREAM_FLAGS_FAST_SENSOR">
+        <description>High-rate navigation and control sensor samples.</description>
+      </entry>
+      <entry value="8" name="BUS_STREAM_FLAGS_SLOW_SENSOR">
+        <description>Low-rate science and environmental samples.</description>
+      </entry>
+      <entry value="16" name="BUS_STREAM_FLAGS_DIAGNOSTIC">
+        <description>Debug and diagnostic traffic.</description>
+      </entry>
+    </enum>
+  </enums>
+
+  <messages>
+    <message id="200000" name="NODE_INFO">
+      <description>Identifies a component and the application schema and firmware versions it runs. Send on startup, after reconnecting, and in response to MAV_CMD_REQUEST_MESSAGE.</description>
+      <field type="uint32_t" name="capabilities" enum="CAPABILITY_FLAGS">Functions implemented by this component.</field>
+      <field type="uint32_t" name="build_id">Implementation-defined build identifier. Use the low 32 bits of the source revision when available.</field>
+      <field type="uint8_t" name="schema_major">Major version of this application message schema. A change indicates wire-level incompatibility.</field>
+      <field type="uint8_t" name="schema_minor">Minor version of this application message schema. A change adds backward-compatible behavior.</field>
+      <field type="uint8_t" name="schema_patch">Patch version of this application message schema. A change clarifies or fixes behavior without changing fields.</field>
+      <field type="uint8_t" name="firmware_major">Firmware major version.</field>
+      <field type="uint8_t" name="firmware_minor">Firmware minor version.</field>
+      <field type="uint8_t" name="firmware_patch">Firmware patch version.</field>
+      <field type="uint8_t" name="role" enum="COMPONENT_ROLE">Logical role of this component.</field>
+    </message>
+
+    <message id="200001" name="ACTUATOR_SETPOINT">
+      <description>Commands one actuator. Receivers must reject stale, duplicate, unauthorized, and out-of-range commands without moving the actuator.</description>
+      <field type="uint32_t" name="command_id">Sender-generated monotonically increasing identifier used for acknowledgement and duplicate suppression.</field>
+      <field type="int16_t" name="position_cdeg" units="cdeg">Requested actuator angle. The valid range is actuator-specific.</field>
+      <field type="uint16_t" name="timeout_ms" units="ms">Time after reception at which this command becomes stale. Zero uses the receiver's configured timeout.</field>
+      <field type="uint16_t" name="max_rate_cdeg_s" units="cdeg/s">Maximum actuator slew rate. Zero uses the receiver's configured rate.</field>
+      <field type="uint8_t" name="target_system">System ID of the intended recipient.</field>
+      <field type="uint8_t" name="target_component">Component ID of the intended recipient.</field>
+      <field type="uint8_t" name="actuator" enum="ACTUATOR_ID">Actuator to command.</field>
+      <field type="uint8_t" name="control_source" enum="CONTROL_SOURCE">Authority under which this command was produced.</field>
+    </message>
+
+    <message id="200002" name="ACTUATOR_STATUS">
+      <description>Reports actuator command progress, measured position, active authority, and faults.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Time since the reporting component booted.</field>
+      <field type="uint32_t" name="command_id">Identifier of the most recently processed command.</field>
+      <field type="int16_t" name="requested_position_cdeg" units="cdeg">Most recently accepted requested angle.</field>
+      <field type="int16_t" name="measured_position_cdeg" units="cdeg">Measured actuator angle.</field>
+      <field type="int16_t" name="velocity_cdeg_s" units="cdeg/s">Measured angular velocity.</field>
+      <field type="uint16_t" name="fault_flags" enum="FAULT_FLAGS">Active faults. Zero means no reported fault.</field>
+      <field type="uint8_t" name="actuator" enum="ACTUATOR_ID">Actuator being reported.</field>
+      <field type="uint8_t" name="control_source" enum="CONTROL_SOURCE">Source that currently has authority.</field>
+      <field type="uint8_t" name="result" enum="COMMAND_RESULT">Result or progress of the most recently processed command.</field>
+      <field type="uint8_t" name="enabled">One when output to the actuator is enabled, otherwise zero.</field>
+    </message>
+
+    <message id="200003" name="CONTROL_AUTHORITY">
+      <description>Reports which control source currently owns the actuators and whether alternate sources are available.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Time since the reporting component booted.</field>
+      <field type="uint16_t" name="authority_timeout_ms" units="ms">Time remaining before the authority lease expires. Zero means no lease is active or the authority does not expire.</field>
+      <field type="uint8_t" name="control_source" enum="CONTROL_SOURCE">Source that currently has authority.</field>
+      <field type="uint8_t" name="rc_available">One when valid local radio-control input is available, otherwise zero.</field>
+      <field type="uint8_t" name="autonomy_available">One when commands from the main computer are available, otherwise zero.</field>
+      <field type="uint8_t" name="failsafe_active">One when local failsafe behavior is active, otherwise zero.</field>
+    </message>
+
+    <message id="200004" name="ENVIRONMENTAL_SAMPLE">
+      <description>Compact water-quality sample. Consumers must inspect valid_fields before using any measurement.</description>
+      <field type="uint64_t" name="time_usec" units="us">UNIX epoch time or time since system boot. The receiver can infer the time base from the magnitude.</field>
+      <field type="uint16_t" name="ph_milli">pH multiplied by 1000.</field>
+      <field type="int16_t" name="water_temperature_cdeg" units="cdegC">Water temperature in centidegrees Celsius.</field>
+      <field type="uint16_t" name="dissolved_oxygen_mg_l_x100">Dissolved oxygen in milligrams per litre multiplied by 100.</field>
+      <field type="uint16_t" name="salinity_ppt_x100">Salinity in parts per thousand multiplied by 100.</field>
+      <field type="uint16_t" name="turbidity_ntu_x10">Turbidity in nephelometric turbidity units multiplied by 10.</field>
+      <field type="uint16_t" name="valid_fields" enum="ENVIRONMENTAL_VALIDITY">Bitmask identifying measurements that are valid.</field>
+      <field type="uint8_t" name="sensor_instance">Zero-based sensor-suite instance.</field>
+    </message>
+
+    <message id="200005" name="POWER_STATE">
+      <description>Reports the whole-boat power mode and compact supply state. Use BATTERY_STATUS when cell-level battery information is required.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Time since the reporting component booted.</field>
+      <field type="int16_t" name="current_ma" units="mA">Supply current. A negative value indicates charging.</field>
+      <field type="uint16_t" name="voltage_mv" units="mV">Supply voltage.</field>
+      <field type="uint16_t" name="state_of_charge_cpercent" units="c%">Remaining charge in centipercent, from 0 to 10000.</field>
+      <field type="uint16_t" name="fault_flags" enum="FAULT_FLAGS">Active power-related and system faults. Zero means no reported fault.</field>
+      <field type="uint8_t" name="mode" enum="POWER_MODE_TYPE">Current power operating mode.</field>
+      <field type="uint8_t" name="external_power">One when an external charging or shore-power source is present, otherwise zero.</field>
+    </message>
+
+    <message id="200006" name="LINK_STATUS">
+      <description>Reports status and counters for one physical data link. RADIO_STATUS remains suitable for MAVLink-radio-compatible metrics.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Time since the reporting component booted.</field>
+      <field type="uint32_t" name="rx_packets">Number of packets received on this link since boot.</field>
+      <field type="uint32_t" name="tx_packets">Number of packets transmitted on this link since boot.</field>
+      <field type="uint16_t" name="rx_errors">Number of receive errors since boot.</field>
+      <field type="uint16_t" name="tx_errors">Number of transmit errors since boot.</field>
+      <field type="uint16_t" name="address">Link-local address, such as the RYLR998 network address. Zero when not applicable.</field>
+      <field type="int16_t" name="rssi_dbm" units="dBm">Received signal strength. INT16_MIN when unavailable.</field>
+      <field type="int16_t" name="snr_cdb" units="cB">Signal-to-noise ratio in centibels. INT16_MIN when unavailable.</field>
+      <field type="uint8_t" name="link_type" enum="LINK_TYPE">Physical link being reported.</field>
+      <field type="uint8_t" name="connected">One when the link is ready to carry packets, otherwise zero.</field>
+    </message>
+
+    <message id="200007" name="BUS_GRANT">
+      <description>Grants one component a bounded transmission slot on the half-duplex RS-485 bus. Only the bus master sends this message.</description>
+      <field type="uint32_t" name="duration_us" units="us">Maximum time for which the recipient may drive the bus after receiving this grant.</field>
+      <field type="uint16_t" name="max_bytes" units="bytes">Maximum encoded MAVLink bytes the recipient may transmit during this grant.</field>
+      <field type="uint16_t" name="stream_flags" enum="BUS_STREAM_FLAGS">Traffic classes the recipient may transmit during this grant.</field>
+      <field type="uint8_t" name="target_system">System ID of the intended recipient.</field>
+      <field type="uint8_t" name="target_component">Component ID of the intended recipient.</field>
+      <field type="uint8_t" name="max_frames">Maximum number of complete MAVLink frames the recipient may transmit during this grant.</field>
+    </message>
+  </messages>
+</mavlink>

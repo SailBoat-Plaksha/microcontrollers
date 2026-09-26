@@ -17,7 +17,7 @@
 /* ==== Configuration ==== */
 
 // Maximum payload size stored from a received LoRa frame
-#define LORA_PAYLOAD_MAX 192
+#define LORA_PAYLOAD_MAX 241
 
 /* ----- Type Definitions ----- */
 

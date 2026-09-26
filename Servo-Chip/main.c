@@ -21,7 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "include/cjson.h"
 
 #define EXT_LED 22
 #define ERR_LED 17
@@ -60,37 +59,6 @@
 // None...
 
 
-/* Observe serial communication on USB */
-static inline void usb_put_byte(uint8_t b) {
-  putchar_raw((int)b); // raw, no line discipline
-}
-/* ---- Servo JSON Wrapper ---- */
-static void servo_json_handler(mState *motor, const char *json_str) {
-  cJSON *json = cJSON_Parse(json_str);
-  if (!json) {
-    printf("Error: Invalid JSON\r\n");
-    fflush(stdout);
-    return;
-  }
-
-  cJSON *angle_item = cJSON_GetObjectItem(json, "angle");
-  if (angle_item && angle_item->type == cJSON_Number) {
-    int angle = (int)angle_item->valuedouble;
-    if (angle >= motor->min_angle && angle <= motor->max_angle) {
-      Servo(motor, angle);
-      printf("OK: Servo moved to %d degrees\r\n", angle);
-      fflush(stdout);
-    } else {
-      printf("Error: Angle out of range\r\n");
-      fflush(stdout);
-    }
-  } else {
-    printf("Error: 'angle' field required\r\n");
-    fflush(stdout);
-  }
-
-  cJSON_Delete(json);
-}
 /* ---- Global Pointers ---- */
 static mState motor1_state;
 mState *sail_motor = &motor1_state;

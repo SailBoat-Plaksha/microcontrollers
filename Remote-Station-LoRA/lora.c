@@ -68,7 +68,7 @@ bool lora_send_command(lora_state_t *state, const char *command) {
         return false;
     }
 
-    char line[256];
+    char line[300];
     size_t command_len = strlen(command);
     while (command_len > 0 && (command[command_len - 1] == '\r' || command[command_len - 1] == '\n')) {
         command_len--;
@@ -93,7 +93,8 @@ bool lora_send_message(lora_state_t *state, uint16_t destination, const char *me
     }
 
     size_t message_length = strlen(message);
-    char command[256];
+    if (message_length > 240u) return false;
+    char command[280];
     int written = snprintf(command, sizeof(command), "AT+SEND=%u,%u,%s", (unsigned)destination, (unsigned)message_length, message);
     if (written < 0 || (size_t)written >= sizeof(command)) {
         return false;
@@ -208,9 +209,7 @@ bool lora_parse_rcv_line(const char *line, lora_rx_frame_t *frame) {
     frame->length = (uint16_t)strtoul(temp, NULL, 10);
 
     field_length = (size_t)(prev - (second + 1));
-    if (field_length >= sizeof(frame->payload)) {
-        field_length = sizeof(frame->payload) - 1u;
-    }
+    if (field_length >= sizeof(frame->payload) || field_length != frame->length) return false;
     memcpy(frame->payload, second + 1, field_length);
     frame->payload[field_length] = '\0';
 

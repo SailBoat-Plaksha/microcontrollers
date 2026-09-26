@@ -1,0 +1,20 @@
+test_100_radio_frames_and_corruptions (test_links.PacketLinks.test_100_radio_frames_and_corruptions) ... ok
+test_c_and_python_interoperate (test_links.PacketLinks.test_c_and_python_interoperate) ... ok
+test_corruption_is_rejected (test_links.PacketLinks.test_corruption_is_rejected) ... ok
+test_dialect_layout_and_known_common_crc (test_links.PacketLinks.test_dialect_layout_and_known_common_crc) ... ok
+test_lora_round_trip_and_length_limit (test_links.PacketLinks.test_lora_round_trip_and_length_limit) ... ok
+test_master_routes_exact_frame (test_links.PacketLinks.test_master_routes_exact_frame) ... ok
+test_micropython_gateway_accepts_same_frame (test_links.PacketLinks.test_micropython_gateway_accepts_same_frame) ... ok
+test_serial_fragmentation_and_resynchronization (test_links.PacketLinks.test_serial_fragmentation_and_resynchronization) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.196s
+
+OK
+LORA: 100/100 intact frames delivered; 100/100 damaged frames rejected
+C/PYTHON: identical MAVLink frame, parser and actuator checks PASS
+INTEGRITY: changed payload rejected by CRC
+LORA: 1/1 complete frame, 26 binary bytes -> 36 ASCII bytes
+PI ROUTER: original MAVLink bytes forwarded unchanged
+MICROPYTHON GATEWAY: same frame and CRC accepted; damage rejected
+SERIAL: 100/100 fragmented frames recovered in order

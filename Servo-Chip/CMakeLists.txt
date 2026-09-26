@@ -43,7 +43,8 @@ add_executable(Servo-Chip
         uart.c
         helpers.c
         servo.c
-        cjson.c
+        ../protocol/mavlink_min.c
+        ../protocol/actuator_command.c
         rc_control.c
         operating_loops.c
 )
@@ -52,8 +53,8 @@ pico_set_program_name(Servo-Chip "Servo-Chip")
 pico_set_program_version(Servo-Chip "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(Servo-Chip 1)
-pico_enable_stdio_usb(Servo-Chip 0)
+pico_enable_stdio_uart(Servo-Chip 0)
+pico_enable_stdio_usb(Servo-Chip 1)
 
 # Add the standard library to the build
 target_link_libraries(Servo-Chip
@@ -64,6 +65,7 @@ target_link_libraries(Servo-Chip
 # Add the standard include files to the build
 target_include_directories(Servo-Chip PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/include
+        ${CMAKE_CURRENT_LIST_DIR}/../protocol
 )
 
 # Add any user requested libraries
@@ -78,7 +80,3 @@ target_link_libraries(Servo-Chip
         )
 
 pico_add_extra_outputs(Servo-Chip)
-pico_enable_stdio_uart(Servo-Chip 0)
-pico_enable_stdio_usb(Servo-Chip 1)
-
-

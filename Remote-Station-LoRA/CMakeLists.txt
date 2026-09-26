@@ -45,7 +45,7 @@ add_executable(Remote-Station-LoRA
         uart.c
         helpers.c
         lora.c
-        cjson.c
+        ../protocol/mavlink_min.c
 )
 
 pico_set_program_name(Remote-Station-LoRA "Remote-Station-LoRA")
@@ -61,6 +61,7 @@ target_link_libraries(Remote-Station-LoRA
 
 target_include_directories(Remote-Station-LoRA PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/include
+        ${CMAKE_CURRENT_LIST_DIR}/../protocol
 )
 
 target_link_libraries(Remote-Station-LoRA

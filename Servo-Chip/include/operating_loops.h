@@ -29,7 +29,7 @@ void idling_loop(void);
 void rc_loop(void);
 
 /**
- * @brief Initializes and starts the Serial JSON interface.
+ * @brief Services the USB serial MAVLink interface once.
  */
 void start_serial_IO(void);
 

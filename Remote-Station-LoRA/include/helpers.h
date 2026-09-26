@@ -1,8 +1,7 @@
 /*
  * helpers.h : Board Helpers
  * -------------------------
- * Shared board configuration and JSON/UART helper declarations for the
- * remote station.
+ * Shared board configuration for the remote station.
  */
 
 #ifndef REMOTE_HELPERS_H
@@ -13,7 +12,6 @@
 #include <stdint.h>
 
 #include "hardware/uart.h"
-#include "cjson.h"
 
 /* ==== Configuration ==== */
 
@@ -78,20 +76,5 @@ void led(int high_low);
  * @brief Set the error LED state.
  */
 void err_led(int high_low);
-
-/**
- * @brief Send a JSON object over stdout.
- */
-void json_send_object(uart_inst_t *uart_id, const cJSON *object);
-
-/**
- * @brief Send a JSON error event.
- */
-void json_send_error(uart_inst_t *uart_id, const char *message);
-
-/**
- * @brief Send a JSON status event.
- */
-void json_send_status(uart_inst_t *uart_id, const char *status, const char *message);
 
 #endif
