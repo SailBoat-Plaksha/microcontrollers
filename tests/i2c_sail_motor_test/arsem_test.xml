@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<mavlink>
+  <!-- Bench-only subset in the private 200000-200099 range documented by
+       ../../protocol/arsem.xml. No production messages are changed or reused
+       with different semantics. No common.xml dependency is needed here. -->
+  <version>3</version>
+  <dialect>200</dialect>
+  <messages>
+    <message id="200090" name="SAIL_MOTOR_TEST">
+      <description>Bench-only timed sail motor command. Source must be system 1/component 1. Target is system 1/component 154. Command IDs must increase within an MCU boot. Moves while busy are rejected; stop can interrupt a move. This is unsigned MAVLink 2 over one raw I2C write.</description>
+      <field type="uint32_t" name="command_id">Nonzero increasing ID. Read status and use its last accepted ID plus one.</field>
+      <field type="uint16_t" name="duration_ms" units="ms">Motor energisation duration, 1 through 5000 for a move, zero for stop.</field>
+      <field type="uint8_t" name="target_system">Recipient system ID, exactly 1.</field>
+      <field type="uint8_t" name="target_component">Recipient component ID, exactly 154.</field>
+      <field type="int8_t" name="direction">1 forward, -1 backward, 0 stop.</field>
+      <field type="uint8_t" name="pwm">PWM duty 1 through 128 out of 255 for a move, zero for stop.</field>
+    </message>
+    <message id="200091" name="SAIL_MOTOR_TEST_STATUS">
+      <description>Bench-only status. Returned as a MAVLink 2 frame padded with zeros to a fixed 32-byte I2C read. Elapsed time is MCU motor energisation time, not measured shaft movement. Rejections leave command_id pointing to the last accepted command.</description>
+      <field type="uint32_t" name="time_boot_ms" units="ms">MCU uptime.</field>
+      <field type="uint32_t" name="command_id">Last accepted command ID; zero at boot.</field>
+      <field type="uint16_t" name="elapsed_ms" units="ms">Time energised for the last accepted move, frozen at stop.</field>
+      <field type="uint16_t" name="remaining_ms" units="ms">Time remaining in the current move.</field>
+      <field type="uint8_t" name="state">0 idle, 1 running, 2 completed, 3 explicitly stopped, 4 receive overflow stop.</field>
+      <field type="int8_t" name="direction">Current output direction; zero when stopped.</field>
+      <field type="uint8_t" name="pwm">Current output PWM; zero when stopped.</field>
+      <field type="uint8_t" name="result">0 accepted/normal, 1 invalid fields, 2 busy, 3 stale/duplicate ID, 4 bad frame, 5 receive overflow, 6 wrong source/target.</field>
+    </message>
+  </messages>
+</mavlink>

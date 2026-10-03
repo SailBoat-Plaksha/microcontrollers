@@ -1,0 +1,2 @@
+pymavlink==2.4.49
+smbus2==0.5.0
