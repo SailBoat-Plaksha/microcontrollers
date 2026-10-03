@@ -26,7 +26,7 @@
 #define ERR_LED 17
 
 /* ==== Motor Driver Config ==== */
-#define STANDBY_PIN 21
+#define STANDBY_PIN 9
 
 /* -- Encoders -- */
 #define M1_ENC_1 2
@@ -36,13 +36,13 @@
 #define M2_ENC_2 5
 
 /* -- Pins -- */
-#define PWM_A 20
-#define INA_2 19
-#define INA_1 18
+#define PWM_A 10
+#define INA_2 11
+#define INA_1 12
 
-#define PWM_B 12
-#define INB_2 11
-#define INB_1 10
+#define PWM_B 15
+#define INB_2 14
+#define INB_1 13
 
 #define M1_CALIBRATION_PIN -1
 #define M2_CALIBRATION_PIN -2
@@ -167,14 +167,17 @@ int motorSetup(void) {
 
 int startup_tests(void) {
   for (int i = 0; i < 3; i++) {
+    /* Test LEDS */
     led(1);
     err_led(1);
     debug_led(1);
 
+    /* Test Motors */
     startRotate(sail_motor, 1, 255);
     startRotate(rudder_motor, 1, 255);
 
     sleep_ms(500);
+    // TODO: Using encoders check if the motors are spinning
 
     stopRotate_noStandby(sail_motor);
     stopRotate(rudder_motor);
@@ -184,6 +187,8 @@ int startup_tests(void) {
 
     sleep_ms(500);
   }
+
+  /* Communication Tests */
 
   return 0;
 }
