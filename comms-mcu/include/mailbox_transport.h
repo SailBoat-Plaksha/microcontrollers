@@ -11,6 +11,8 @@ typedef struct {
     volatile uint16_t dropped_writes;
     volatile uint8_t tx[ARSEM_MAILBOX_FRAME_BYTES];
     volatile bool tx_available;
+    volatile bool read_started;
+    volatile bool read_reply_available;
     volatile size_t tx_position;
     uint8_t write_staging[ARSEM_MAILBOX_FRAME_BYTES];
     size_t write_count;

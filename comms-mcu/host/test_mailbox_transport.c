@@ -129,6 +129,20 @@ int main(void) {
     mailbox_transport_service(&mailbox, &relay);
     assert(relay.forwarded_from_pi == 3);
     assert(relay.radio_tx_errors >= 2);
+
+    /* A read starting between completed TX and the next service cycle must
+     * remain all-zero, even if main-loop service runs between its bytes. */
+    mailbox.tx_available = false;
+    fake_output_length = 0;
+    mailbox_transport_callback(NULL, I2C_SLAVE_REQUEST);
+    mailbox_transport_service(&mailbox, &relay);
+    for (size_t i = 1; i < 64; ++i)
+        mailbox_transport_callback(NULL, I2C_SLAVE_REQUEST);
+    assert(fake_output_length == 64);
+    for (size_t i = 0; i < 64; ++i) assert(fake_output[i] == 0);
+    mailbox_transport_callback(NULL, I2C_SLAVE_FINISH);
+    mailbox_transport_service(&mailbox, &relay);
+    assert(mailbox.tx_available);
     puts("mailbox transport callbacks: exact, short/retry, write-only/repeated-start, overflow and staging passed");
     return 0;
 }

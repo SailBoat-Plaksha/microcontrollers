@@ -32,9 +32,12 @@ void mailbox_transport_callback(i2c_inst_t *i2c, i2c_slave_event_t event) {
         }
         break;
     case I2C_SLAVE_REQUEST:
+        if (!mailbox->read_started)
+            mailbox->read_reply_available = mailbox->tx_available;
+        mailbox->read_started = true;
         /* The SDK invokes REQUEST for every RD_REQ. A 65th request gets a
          * zero sentinel; it is never treated as an extra mailbox byte. */
-        if (mailbox->tx_available && mailbox->tx_position < ARSEM_MAILBOX_FRAME_BYTES)
+        if (mailbox->read_reply_available && mailbox->tx_position < ARSEM_MAILBOX_FRAME_BYTES)
             i2c_write_byte_raw(i2c, mailbox->tx[mailbox->tx_position++]);
         else
             i2c_write_byte_raw(i2c, 0u);
@@ -55,9 +58,11 @@ void mailbox_transport_callback(i2c_inst_t *i2c, i2c_slave_event_t event) {
         } else {
             /* A short/aborted read is retried from byte zero. The staged
              * frame remains intact until a complete 64-byte read finishes. */
-            if (mailbox->tx_position == ARSEM_MAILBOX_FRAME_BYTES)
+            if (mailbox->read_reply_available && mailbox->tx_position == ARSEM_MAILBOX_FRAME_BYTES)
                 mailbox->tx_available = false;
             mailbox->tx_position = 0;
+            mailbox->read_started = false;
+            mailbox->read_reply_available = false;
         }
         break;
     }
@@ -78,7 +83,7 @@ void mailbox_transport_service(mailbox_transport_t *mailbox, relay_t *relay) {
     mailbox->rx_invalid = false;
     dropped = mailbox->dropped_writes;
     mailbox->dropped_writes = 0;
-    if (!mailbox->tx_available) {
+    if (!mailbox->tx_available && !mailbox->read_started) {
         uint8_t next[ARSEM_MAILBOX_FRAME_BYTES];
         (void)relay_i2c_read(relay, next);
         for (size_t i = 0; i < sizeof(next); ++i) mailbox->tx[i] = next[i];
