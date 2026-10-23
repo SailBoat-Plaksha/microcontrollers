@@ -17,7 +17,8 @@ from protocol import codec
 class GroundStationState:
     def __init__(self):
         self.lock = threading.RLock()
-        self.events: queue.Queue[tuple[float, object]] = queue.Queue(maxsize=1000)
+        self.events: queue.Queue[tuple[float, object, object | None]] = queue.Queue(maxsize=1000)
+        self.terminal_events: deque[tuple[float, RequestOutcome, object | None]] = deque(maxlen=256)
         self.client: BoatClient | None = None
         self.unsubscribe = None
         self.connected = False
@@ -27,28 +28,42 @@ class GroundStationState:
         self.busy = False
         self.feedback_valid = False
         self.motor_report: MotorReport | None = None
+        self.motor_reports: dict[int, MotorReport] = {}
+        self.motor_report_at: dict[int, float] = {}
         self.motor_health: NodeHealthReport | None = None
         self.nodes: dict[tuple[int, int], dict] = {}
         self.pings: dict[tuple[int, int], PongReply] = {}
         self.imu: deque[tuple[float, ImuSample]] = deque(maxlen=100)
         self.trace: deque[dict] = deque(maxlen=1000)
         self.transport = None
+        self.trace_drops = 0
+        self.outcomes = deque(maxlen=256)
 
     def enqueue(self, event, owner=None):
+        terminal = isinstance(event, RequestOutcome) and event.state in (0, 4, 5, 6)
+        if terminal:
+            with self.lock:
+                self.terminal_events.append((time.monotonic(), event, owner))
+            return
         try:
             self.events.put_nowait((time.monotonic(), event, owner))
         except queue.Full:
-            try:
-                self.events.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self.events.put_nowait((time.monotonic(), event, owner))
-            except queue.Full:
-                pass
+            with self.lock:
+                self.trace_drops += 1
 
     def drain(self):
         changed = False
+        while True:
+            with self.lock:
+                try:
+                    at, event, owner = self.terminal_events.popleft()
+                except IndexError:
+                    break
+            if owner is not None and owner is not self.client:
+                continue
+            changed = True
+            with self.lock:
+                self._apply(at, event)
         while True:
             try:
                 at, event, owner = self.events.get_nowait()
@@ -74,13 +89,18 @@ class GroundStationState:
             record.update(error=f"{type(event).__name__}: {event}")
         self.trace.append(record)
         if isinstance(event, TransportEvent):
-            self.connected = event.state == "connected"
+            if event.state == "connected":
+                self.connected = True
+            elif event.state == "disconnected":
+                self.connected = False
             self.mode = self.transport.name if self.connected and self.transport else event.state.upper()
             self.detail = event.detail
             if event.state == "disconnected":
                 self.busy = False
                 self.feedback_valid = False
                 self.motor_report = None
+                self.motor_reports.clear()
+                self.motor_report_at.clear()
                 self.motor_health = None
                 self.uncertain = True
         elif isinstance(event, TransportLog):
@@ -99,6 +119,8 @@ class GroundStationState:
             if (event.source == (1, 154) and previous is not None and
                     previous.boot_id != event.boot_id):
                 self.motor_report = None
+                self.motor_reports.clear()
+                self.motor_report_at.clear()
                 self.busy = False
                 self.uncertain = True
             node.update(seen=at, health=event)
@@ -109,17 +131,23 @@ class GroundStationState:
                 if self.motor_report is None:
                     self.uncertain = True
         elif isinstance(event, MotorReport):
-            self.motor_report = event
+            self.motor_reports[event.actuator] = event
+            self.motor_report_at[event.actuator] = at
+            if event.actuator == 1:
+                self.motor_report = event
             node = self.nodes.setdefault(event.source, {})
             node.update(seen=at, feedback_seen=at, motor=event)
             self.uncertain = False
-            self.busy = event.result == 1 or bool(event.enabled)
+            self.busy = any(item.result == 1 or bool(item.enabled)
+                            for item in self.motor_reports.values())
         elif isinstance(event, RequestOutcome):
+            self.outcomes.append(event)
             self.uncertain = event.result == 0 or event.state in (0, 1)
             if event.state in (1, 2, 3):
-                self.busy = event.state in (2, 3)
+                self.busy = event.state in (1, 2, 3)
             elif event.state in (4, 5, 6):
-                self.busy = False
+                self.busy = any(item.result == 1 or bool(item.enabled)
+                                for item in self.motor_reports.values())
         elif isinstance(event, ImuSample):
             self.imu.append((at, event))
             node = self.nodes.setdefault(event.source, {})
@@ -142,15 +170,21 @@ class GroundStationState:
             record["frame_hex"] = event.bytes.hex()
 
     def can_move(self):
+        return self.can_move_actuator(1)
+
+    def can_move_actuator(self, actuator):
+        if actuator not in (1, 2):
+            return False
         with self.lock:
             transport_up = bool(getattr(self.transport, "is_connected", self.connected))
-            if not self.connected or not transport_up or self.busy or self.uncertain or not self.feedback_valid:
+            if (not self.connected or not transport_up or self.busy or self.uncertain or
+                    not self.feedback_valid):
                 return False
-            if self.motor_report is None or self.motor_health is None:
-                return False
+            report = self.motor_reports.get(actuator)
             node = self.nodes.get((1, 154), {})
             now = time.monotonic()
-            return (now - node.get("feedback_seen", 0) <= 5.0 and
+            return (report is not None and report.result == 0 and not report.enabled and
+                    now - self.motor_report_at.get(actuator, 0) <= 5.0 and
                     now - node.get("health_seen", 0) <= 5.0)
 
     def jsonl(self):

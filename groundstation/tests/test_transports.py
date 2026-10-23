@@ -3,7 +3,8 @@ import threading
 import time
 import unittest
 
-from boat.client import BoatClient, Heartbeat, ImuSample, MotorReport, PongReply
+from boat.client import (BoatClient, Heartbeat, ImuSample, MotorReport, PongReply,
+                         RequestOutcome)
 from protocol import codec
 from groundstation.transports import SerialTransport, SimulationTransport, SSHTransport
 
@@ -110,7 +111,8 @@ class TransportTests(unittest.TestCase):
         transport.open(lambda frame: None)
         argv = processes[0].argv
         self.assertIn("StrictHostKeyChecking=yes", argv)
-        self.assertEqual(argv[-3:], ["python3", "-m", "onboard.bridge"])
+        self.assertEqual(argv[-6:], ["python3", "-m", "onboard", "bridge", "--config",
+                                     "/etc/arsem/onboard.toml"])
         self.assertEqual(argv[0], "ssh")
         self.assertEqual(processes[0].kwargs["stderr"], -1)
         outgoing = codec.encode("PING", {"time_usec": 1, "seq": 2,
@@ -133,15 +135,70 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(any(isinstance(e, Heartbeat) for e in events))
         self.assertTrue(any(isinstance(e, ImuSample) and e.source == (1, 1) for e in events))
         self.assertTrue(any(isinstance(e, MotorReport) for e in events))
-        ticket = client.set_absolute_angle(0, 1234)
+        ticket = client.set_absolute_angle(1, 1234)
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline and not any(
-                getattr(e, "request_id", None) == ticket.request_id for e in events):
+                isinstance(e, MotorReport) and e.actuator == 1 and
+                e.measured_position_cdeg == 1234 for e in events):
             time.sleep(0.01)
-        status = [e for e in events if isinstance(e, MotorReport)][-1]
+        status = [e for e in events if isinstance(e, MotorReport) and e.actuator == 1][-1]
         self.assertEqual(status.measured_position_cdeg, 1234)
         self.assertEqual(status.source, (1, 154))
+        self.assertTrue({2, 3, 4}.issubset({e.state for e in events
+                                             if isinstance(e, RequestOutcome) and
+                                             e.request_id == ticket.request_id}))
+        client.set_absolute_angle(2, -500)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not any(
+                isinstance(e, MotorReport) and e.actuator == 2 and
+                e.measured_position_cdeg == -500 for e in events):
+            time.sleep(0.01)
+        self.assertTrue(any(isinstance(e, MotorReport) and e.actuator == 1 and
+                            e.measured_position_cdeg == 1234 for e in events))
+        self.assertTrue(any(isinstance(e, MotorReport) and e.actuator == 2 and
+                            e.measured_position_cdeg == -500 for e in events))
         client.disconnect()
+
+    def test_simulation_periodic_telemetry_and_reconnect_discards_delayed_events(self):
+        transport = SimulationTransport(response_delay=0.08, telemetry_interval=0.05)
+        events = []
+        first = lambda frame: events.append(("old", frame))
+        transport.open(first)
+        transport.send_frame(codec.encode("PING", {"time_usec": 1, "seq": 2,
+            "target_system": 0, "target_component": 0}))
+        old_boot = transport._boot_id
+        transport.close()
+        events.clear()
+        transport.open(lambda frame: events.append(("new", frame)))
+        self.assertNotEqual(old_boot, transport._boot_id)
+        time.sleep(0.12)
+        self.assertFalse(any(owner == "old" for owner, _ in events))
+        self.assertTrue(any(owner == "new" for owner, _ in events))
+        transport.close()
+
+    def test_ssh_short_write_is_reported_as_uncertain_without_replay(self):
+        class ShortWriter:
+            def __init__(self):
+                self.calls = 0
+            def write(self, data):
+                self.calls += 1
+                return len(data) - 1
+            def flush(self):
+                pass
+            def close(self):
+                pass
+        def popen(argv, **kwargs):
+            proc = FakeProcess(argv, **kwargs)
+            proc.stdin = ShortWriter()
+            return proc
+        transport = SSHTransport("boat-pi", popen_factory=popen)
+        transport.open(lambda frame: None)
+        outgoing = codec.encode("PING", {"time_usec": 1, "seq": 2,
+            "target_system": 0, "target_component": 0})
+        with self.assertRaisesRegex(OSError, "outcome uncertain"):
+            transport.send_frame(outgoing)
+        self.assertEqual(transport._proc.stdin.calls, 1)
+        transport.close()
 
     def test_simulation_open_and_ambiguous_send_failures_are_visible(self):
         fail_open = BoatClient(SimulationTransport(fail_open=True))
