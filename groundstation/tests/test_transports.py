@@ -127,9 +127,10 @@ class TransportTests(unittest.TestCase):
         events = []
         client.subscribe(events.append)
         client.connect()
+        self.addCleanup(client.disconnect)
         client.ping_all()
         deadline = time.monotonic() + 1
-        while time.monotonic() < deadline and not any(isinstance(e, MotorReport) for e in events):
+        while time.monotonic() < deadline and len([e for e in events if isinstance(e, PongReply)]) < 3:
             time.sleep(0.01)
         self.assertEqual(len([e for e in events if isinstance(e, PongReply)]), 3)
         self.assertTrue(any(isinstance(e, Heartbeat) for e in events))
