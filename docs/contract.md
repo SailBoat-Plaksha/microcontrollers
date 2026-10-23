@@ -119,4 +119,4 @@ Integration fixes return to the owning lane as a fresh task carrying the origina
 
 ## 9. Remaining checks
 
-GUI browser QA, integration reviews, firmware compilation, and physical I2C, radio, IMU, motor, encoder, and RC checks remain separate from host tests. Exact device models, occupied pins, and Pico variants need confirmation before live deployment. Resolve the current pin assignments against the actual board and wiring without changing protected RC code; see `docs/branch-review.md` and `docs/hardware-checklist.md`.
+GUI browser QA, integration reviews, and firmware compilation passed as recorded in `docs/verification.md`. Physical I2C, radio, IMU, motor, encoder, and RC checks remain unverified. Exact device models, occupied pins, and Pico variants need confirmation before live deployment. Resolve the current pin assignments against the actual board and wiring without changing protected RC code; see `docs/branch-review.md` and `docs/hardware-checklist.md`.

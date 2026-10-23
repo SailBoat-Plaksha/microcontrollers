@@ -48,13 +48,7 @@ an independent check still runs after a failure.
 
 ## Current result and proof limits
 
-Current full run: 10 scenarios pass; scenario 2 has one failing stale-IMU
-assertion. `onboard/router.py::_poll_imu` clears validity when a read fails,
-but there is no age check that clears `imu_valid_fields` when the last
-successful sample simply stops being polled. Reproduction: sample the configured
-IMU at injected time `10.0`, advance the injected clock to `15.001`, then inspect
-`router.imu_valid_fields`; it remains `3`. This is a product-source finding for
-the onboard owner; this scenario lane records it without modifying onboard code.
+Current full run: **11 PASS, 0 FAIL, 0 PENDING**. All 33 individual checks pass. IMU samples lose validity after five seconds; sensor unavailability and recovery are verified through the actual relay and ground gateway. JSON, JUnit and JSONL outputs are byte-identical across repeated runs.
 
 The LoRa fixture drives each real Gateway configuration and send transaction
 with an explicit millisecond clock. It acknowledges configuration only after

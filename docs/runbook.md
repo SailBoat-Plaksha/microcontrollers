@@ -51,7 +51,7 @@ The scenario runner writes JSON, JUnit, and JSONL trace files under `scenarios/r
 python3 -m scenarios.run
 ```
 
-A scenario marked `PENDING` is unfinished, and makes the runner exit nonzero. Treat current partial scenarios as pending integration work, not as a passing complete suite. For the current state and commands, see [scenario notes](../scenarios/README.md).
+A scenario marked `PENDING` is unfinished, and makes the runner exit nonzero. The final integrated run passes all 11 scenarios. For the current state and commands, see [scenario notes](../scenarios/README.md).
 
 ## Pi setup and real launch
 
@@ -68,6 +68,19 @@ The service has one process-wide bus lock. Run either `serve` or `bridge` at a t
 
 ```sh
 python3 -m onboard bridge --config /etc/arsem/onboard.toml
+```
+
+The fixed SSH command runs from the remote account's home directory. Make this checkout importable by that account's `python3`, and install the requirements into that same interpreter. One option, run on the Pi from the repository root, is a user-site path file:
+
+```sh
+python3 - <<'PYTHON'
+from pathlib import Path
+import site
+folder = Path(site.getusersitepackages())
+folder.mkdir(parents=True, exist_ok=True)
+(folder / "arsem-checkout.pth").write_text(str(Path.cwd().resolve()) + "\n")
+PYTHON
+(cd /tmp && python3 -c 'import onboard, boat, protocol; import smbus2')
 ```
 
 Configure the GUI SSH host field with a local SSH config alias whose key authentication and host key are already set up. The GUI uses the fixed bridge command above; it does not accept a shell command. The bridge sends MAVLink bytes on stdout and logs on stderr.
@@ -97,3 +110,5 @@ cmake --build build-motor
 Do not enable reference-valid options using example or guessed encoder values. Confirm actual board revision, driver, encoder CPR, travel limits, polarity, GPIO map, and safe power isolation first. The demo build disables the startup motor sweep; the legacy `startup_tests()` sweep remains in the source for builds that use that path. Resolve the current branch pin conflict before applying motor power: `main.c` and `operating_loops.c` declare RC mode GP9 while `rc_control.c` configures GP21; `main.c` assigns standby GP9, while `servo.c`/`servo.h` use standby GP21, overlapping the configured RC mode input. See [branch review](branch-review.md) and [hardware checklist](hardware-checklist.md).
 
 A successful firmware build is not a flash, bus, radio, encoder, or motion check. Complete the hardware checklist one item at a time, recording actual observations.
+
+For the final test totals, build environment, browser checks and remaining physical work, see [verification results](verification.md).

@@ -1,18 +1,14 @@
-<testsuite name="boat-midsem-scenarios-1-11" tests="44" failures="2" skipped="0">
+<testsuite name="boat-midsem-scenarios-1-11" tests="44" failures="0" skipped="0">
   <testcase classname="scenario.1" name="production integration" />
   <testcase classname="scenario.1" name="BoatClient → production router → compiled motor adapter; correlated status and measured completion" />
   <testcase classname="scenario.1" name="Full ground Gateway → C modem/relay → router → compiled motor → relay → Gateway" />
   <testcase classname="scenario.1" name="SSHTransport pipes → production onboard._run_bridge → compiled motor → SSH stdout" />
   <testcase classname="scenario.1" name="BoatClient request encoding" />
   <testcase classname="scenario.1" name="Generated C header to Python codec" />
-  <testcase classname="scenario.2" name="production integration">
-    <failure message="scenario 2 failed">AssertionError: stale sample remained valid: sampled_at=10.0, now=15.001000000000001, valid_fields=3</failure>
-  </testcase>
+  <testcase classname="scenario.2" name="production integration" />
   <testcase classname="scenario.2" name="Pi-owned IMU register acquisition and encoded units" />
   <testcase classname="scenario.2" name="IMU units, validity, read error and recovery through LoRa relay/gateway" />
-  <testcase classname="scenario.2" name="Stale IMU sample validity expires after five seconds">
-    <failure message="Stale IMU sample validity expires after five seconds">AssertionError: stale sample remained valid: sampled_at=10.0, now=15.001000000000001, valid_fields=3</failure>
-  </testcase>
+  <testcase classname="scenario.2" name="Stale IMU sample validity expires after five seconds" />
   <testcase classname="scenario.2" name="Client ping and IMU decoding" />
   <testcase classname="scenario.3" name="production integration" />
   <testcase classname="scenario.3" name="Actual motor ping responder" />

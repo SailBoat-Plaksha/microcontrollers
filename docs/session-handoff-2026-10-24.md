@@ -4,4 +4,4 @@ Use [runbook](runbook.md) for reproducible install, software checks, and the sep
 
 Current implementation uses `ACTUATOR_REQUEST` (200008). The motor Pico applies STEP once against fresh valid feedback. Mailboxes are 64 bytes; supported messages fit, and standard PING uses CRC_EXTRA 237. Do not use the older `ACTUATOR_SETPOINT` production description or claim every frame is 32 bytes.
 
-Host tests and the motor adapter harness are available through the runbook. Scenario integration remains partly pending. Pi, ground station, and motor review tasks, GUI browser QA, Pico firmware compilation, and physical checks are not complete in this handoff. No test count or completion claim here replaces a fresh run.
+Software implementation, integration reviews, all 11 host scenarios, GUI browser QA, and Pico/Pico 2 firmware builds are complete. The final checkout passes 107 Python tests and six C host checks. See [verification results](verification.md). No firmware was flashed and no physical exchange or movement was tested. The existing RC/standby pin conflict and measured encoder references still require hardware confirmation.

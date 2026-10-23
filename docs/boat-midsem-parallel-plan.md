@@ -12,8 +12,8 @@ The current implementation uses a Pi-controlled shared I2C bus, MAVLink 2 messag
 
 ## Checks and remaining work
 
-Run the root unit tests, Pi router tests, ground station tests, motor host harness, and scenario runner as shown in the [runbook](runbook.md). Report each result from the current checkout; scenario `PENDING` results are unfinished integration checks. GUI browser QA and reviews of the Pi, GUI, and motor integration are still pending. Firmware build and all real Pi, I2C, radio, encoder, RC, and motor checks also remain pending.
+The integrated software passes 107 Python tests, six C host checks, all 11 system scenarios, and browser QA. Motor and radio firmware compile for Pico and Pico 2 using SDK 2.3.1 and ARM GCC 16.1.0. See [verification results](verification.md) for the test scope and [runbook](runbook.md) for commands. Real Pi, I2C, radio, encoder, RC and motor operation remain unverified.
 
 Before live operation, confirm the exact boards, devices, wiring, addresses, radio settings, measured encoder calibration and pin map. Current branch conflicts are: `rc_control.c` configures mode GP21 while `main.c` and `operating_loops.c` declare GP9; `main.c` declares standby GP9 while `servo.c`/`servo.h` use GP21. Resolve these against actual wiring without changing the protected RC implementation. See [branch review](branch-review.md).
 
-Keep changes within their assigned project areas. This documentation task does not modify protocol, firmware, GUI, evidence, PowerBoard, RC, or bench implementation files.
+Keep changes within their assigned project areas. Protected RC files and loop behavior, Power-Board-Watchdog, evidence, and the isolated motor bench remain unchanged.

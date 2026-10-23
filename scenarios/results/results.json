@@ -1,6 +1,6 @@
 {
   "exit_policy": "nonzero when any scenario is FAIL or PENDING",
-  "overall": "FAIL",
+  "overall": "PASS",
   "scenarios": [
     {
       "checks": [
@@ -1336,9 +1336,9 @@
           "status": "PASS"
         },
         {
-          "detail": "AssertionError: stale sample remained valid: sampled_at=10.0, now=15.001000000000001, valid_fields=3",
+          "detail": "Production path assertion passed; evidence trace records real frames, requests, identities, clock and measured state.",
           "name": "Stale IMU sample validity expires after five seconds",
-          "status": "FAIL"
+          "status": "PASS"
         },
         {
           "detail": "BoatClient matched ping identity/RTT and preserved IMU units, source and validity from the reported health mask.",
@@ -1348,12 +1348,12 @@
       ],
       "id": 2,
       "pending_reason": null,
-      "status": "FAIL",
+      "status": "PASS",
       "title": "Pi-owned IMU sampling, units and freshness",
       "trace": [
         {
           "event": "scenario_complete",
-          "status": "FAIL"
+          "status": "PASS"
         },
         {
           "event": "integrated_check",
@@ -1368,85 +1368,85 @@
               },
               {
                 "address": 104,
-                "at": 10.159999999999997,
+                "at": 10.179999999999996,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.259999999999994,
+                "at": 10.279999999999994,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.359999999999992,
+                "at": 10.379999999999992,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.45999999999999,
+                "at": 10.47999999999999,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.559999999999988,
+                "at": 10.579999999999988,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.659999999999986,
+                "at": 10.679999999999986,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.759999999999984,
+                "at": 10.779999999999983,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.859999999999982,
+                "at": 10.879999999999981,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 10.95999999999998,
+                "at": 10.979999999999979,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               },
               {
                 "address": 104,
-                "at": 11.099999999999977,
+                "at": 11.119999999999976,
                 "length": 12,
                 "op": "imu",
                 "register": 16
               }
             ],
             "pi_health_frame": {
-              "at": 11.019999999999978,
+              "at": 11.079999999999977,
               "direction": "router_to_ground",
-              "hex": "fd0b00000b0101490d03d0c0b0a0fb030000000003db38",
+              "hex": "fd0b00000c0101490d03d0c0b0a0370400000000032590",
               "name": "NODE_HEALTH"
             },
             "scaled_imu_frame": {
-              "at": 11.099999999999977,
+              "at": 11.119999999999976,
               "direction": "router_to_ground",
-              "hex": "fd0f00000c01011a00004b0400000a00ecffe80304000500067091",
+              "hex": "fd0f00000d01011a00005f0400000a00ecffe8030400050006c7b1",
               "name": "SCALED_IMU"
             },
             "source": [
@@ -1461,6 +1461,7 @@
           "evidence": {
             "fault_flags": 2,
             "fault_valid_fields": 0,
+            "recovered_valid_fields": 3,
             "sample_fields": {
               "xacc": 12,
               "xgyro": 7,
@@ -1471,214 +1472,39 @@
             },
             "trace": [
               {
-                "at": 13.359999999999928,
+                "at": 13.82499999999992,
                 "direction": "relay_to_gateway_usb",
-                "hex": "fd09000049019a00000000000000000000040352b6"
-              },
-              {
-                "at": 13.359999999999928,
-                "direction": "router_frame",
-                "hex": "fd04000001019e490d038015801575ea",
-                "name": "NODE_HEALTH",
-                "source": [
-                  1,
-                  158
-                ]
-              },
-              {
-                "at": 13.379999999999928,
-                "direction": "router_frame",
-                "hex": "fd0f00002601011a0000330d00000c00deffe8030700f8ff09128a",
-                "name": "SCALED_IMU",
-                "source": [
-                  1,
-                  1
-                ]
-              },
-              {
-                "at": 13.419999999999927,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd0f00002601011a0000330d00000c00deffe8030700f8ff09128a"
-              },
-              {
-                "at": 13.419999999999927,
-                "direction": "router_frame",
-                "hex": "fd1200004d019a420d036b3400000000000000000000000000000202bc56",
-                "name": "ACTUATOR_STATUS",
-                "source": [
-                  1,
-                  154
-                ]
-              },
-              {
-                "at": 13.459999999999926,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd1200004d019a420d036b3400000000000000000000000000000202bc56"
-              },
-              {
-                "at": 13.459999999999926,
-                "direction": "router_frame",
-                "hex": "fd09000000019e000000000000001208000403fb1d",
-                "name": "HEARTBEAT",
-                "source": [
-                  1,
-                  158
-                ]
-              },
-              {
-                "at": 13.479999999999926,
-                "direction": "router_frame",
-                "hex": "fd0f00002701011a0000970d00000c00deffe8030700f8ff093964",
-                "name": "SCALED_IMU",
-                "source": [
-                  1,
-                  1
-                ]
-              },
-              {
-                "at": 13.519999999999925,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd0f00002701011a0000970d00000c00deffe8030700f8ff093964"
-              },
-              {
-                "at": 13.544999999999925,
-                "direction": "router_frame",
-                "hex": "fd090000280101490d03d0c0b0a0d80d0000027aab",
-                "name": "NODE_HEALTH",
-                "source": [
-                  1,
-                  1
-                ]
-              },
-              {
-                "at": 13.564999999999925,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd090000280101490d03d0c0b0a0d80d0000027aab"
-              },
-              {
-                "at": 13.564999999999925,
-                "direction": "router_frame",
-                "hex": "fd1200004e019a420d03fc3400000000000000000000000000000102ebd1",
-                "name": "ACTUATOR_STATUS",
-                "source": [
-                  1,
-                  154
-                ]
-              },
-              {
-                "at": 13.604999999999924,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd1200004e019a420d03fc3400000000000000000000000000000102ebd1"
-              },
-              {
-                "at": 13.604999999999924,
-                "direction": "router_frame",
-                "hex": "fd04000001019e490d038015801575ea",
-                "name": "NODE_HEALTH",
-                "source": [
-                  1,
-                  158
-                ]
-              },
-              {
-                "at": 13.624999999999924,
-                "direction": "router_frame",
-                "hex": "fd0f00002901011a0000280e00000c00deffe8030700f8ff091c1d",
-                "name": "SCALED_IMU",
-                "source": [
-                  1,
-                  1
-                ]
-              },
-              {
-                "at": 13.664999999999923,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd0f00002901011a0000280e00000c00deffe8030700f8ff091c1d"
-              },
-              {
-                "at": 13.664999999999923,
-                "direction": "router_frame",
-                "hex": "fd12000051019a420d0360350000000000000000000000000000020219dc",
-                "name": "ACTUATOR_STATUS",
-                "source": [
-                  1,
-                  154
-                ]
-              },
-              {
-                "at": 13.704999999999922,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd12000051019a420d0360350000000000000000000000000000020219dc"
-              },
-              {
-                "at": 13.704999999999922,
-                "direction": "router_frame",
-                "hex": "fd09000000019e000000000000001208000403fb1d",
-                "name": "HEARTBEAT",
-                "source": [
-                  1,
-                  158
-                ]
-              },
-              {
-                "at": 13.724999999999921,
-                "direction": "router_frame",
-                "hex": "fd0f00002a01011a00008c0e00000c00deffe8030700f8ff099ca9",
-                "name": "SCALED_IMU",
-                "source": [
-                  1,
-                  1
-                ]
-              },
-              {
-                "at": 13.76499999999992,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd0f00002a01011a00008c0e00000c00deffe8030700f8ff099ca9"
-              },
-              {
-                "at": 13.76499999999992,
-                "direction": "router_frame",
-                "hex": "fd12000052019a420d03c435000000000000000000000000000001029f62",
-                "name": "ACTUATOR_STATUS",
-                "source": [
-                  1,
-                  154
-                ]
-              },
-              {
-                "at": 13.80499999999992,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd12000052019a420d03c435000000000000000000000000000001029f62"
-              },
-              {
-                "at": 13.80499999999992,
-                "direction": "router_frame",
-                "hex": "fd04000001019e490d038015801575ea",
-                "name": "NODE_HEALTH",
-                "source": [
-                  1,
-                  158
-                ]
+                "hex": "fd12000052019a420d03d835000000000000000000000000000001029cf9"
               },
               {
                 "at": 13.82499999999992,
                 "direction": "router_frame",
-                "hex": "fd0f00002b01011a0000f00e00000c00deffe8030700f8ff09ec04",
-                "name": "SCALED_IMU",
+                "hex": "fd04000001019e490d038015801575ea",
+                "name": "NODE_HEALTH",
+                "source": [
+                  1,
+                  158
+                ]
+              },
+              {
+                "at": 13.844999999999919,
+                "direction": "router_frame",
+                "hex": "fd0900002c0101490d03d0c0b0a0040f000002a7e1",
+                "name": "NODE_HEALTH",
                 "source": [
                   1,
                   1
                 ]
               },
               {
-                "at": 13.864999999999919,
+                "at": 13.884999999999918,
                 "direction": "relay_to_gateway_usb",
-                "hex": "fd0f00002b01011a0000f00e00000c00deffe8030700f8ff09ec04"
+                "hex": "fd0900002c0101490d03d0c0b0a0040f000002a7e1"
               },
               {
-                "at": 13.864999999999919,
+                "at": 13.884999999999918,
                 "direction": "router_frame",
-                "hex": "fd12000055019a420d03283600000000000000000000000000000202f48e",
+                "hex": "fd12000055019a420d033c3600000000000000000000000000000202fbaf",
                 "name": "ACTUATOR_STATUS",
                 "source": [
                   1,
@@ -1686,12 +1512,12 @@
                 ]
               },
               {
-                "at": 13.904999999999918,
+                "at": 13.924999999999917,
                 "direction": "relay_to_gateway_usb",
-                "hex": "fd12000055019a420d03283600000000000000000000000000000202f48e"
+                "hex": "fd12000055019a420d033c3600000000000000000000000000000202fbaf"
               },
               {
-                "at": 13.904999999999918,
+                "at": 13.924999999999917,
                 "direction": "router_frame",
                 "hex": "fd09000000019e000000000000001208000403fb1d",
                 "name": "HEARTBEAT",
@@ -1701,17 +1527,195 @@
                 ]
               },
               {
-                "at": 13.924999999999917,
+                "at": 13.944999999999917,
                 "direction": "router_frame",
-                "hex": "fd0f00002c01011a0000540f00000c00deffe8030700f8ff09104d",
+                "hex": "fd0f00002d01011a0000680f00000c00deffe8030700f8ff096276",
                 "name": "SCALED_IMU",
                 "source": [
                   1,
                   1
                 ]
+              },
+              {
+                "at": 13.944999999999917,
+                "direction": "router_frame",
+                "hex": "fd0b00002e0101490d03d0c0b0a0680f00000000034c75",
+                "name": "NODE_HEALTH",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 13.964999999999916,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0f00002d01011a0000680f00000c00deffe8030700f8ff096276"
+              },
+              {
+                "at": 13.984999999999916,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0b00002e0101490d03d0c0b0a0680f00000000034c75"
+              },
+              {
+                "at": 13.984999999999916,
+                "direction": "router_frame",
+                "hex": "fd0f00002f01011a0000900f00000c00deffe8030700f8ff099324",
+                "name": "SCALED_IMU",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 14.024999999999915,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0f00002f01011a0000900f00000c00deffe8030700f8ff099324"
+              },
+              {
+                "at": 14.024999999999915,
+                "direction": "router_frame",
+                "hex": "fd12000056019a420d03c836000000000000000000000000000001024195",
+                "name": "ACTUATOR_STATUS",
+                "source": [
+                  1,
+                  154
+                ]
+              },
+              {
+                "at": 14.064999999999914,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd12000056019a420d03c836000000000000000000000000000001024195"
+              },
+              {
+                "at": 14.064999999999914,
+                "direction": "router_frame",
+                "hex": "fd090000300101000000000000001200000403bf62",
+                "name": "HEARTBEAT",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 14.084999999999914,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd090000300101000000000000001200000403bf62"
+              },
+              {
+                "at": 14.084999999999914,
+                "direction": "router_frame",
+                "hex": "fd04000001019e490d038015801575ea",
+                "name": "NODE_HEALTH",
+                "source": [
+                  1,
+                  158
+                ]
+              },
+              {
+                "at": 14.104999999999913,
+                "direction": "router_frame",
+                "hex": "fd0f00003101011a0000081000000c00deffe8030700f8ff09a1ba",
+                "name": "SCALED_IMU",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 14.144999999999913,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0f00003101011a0000081000000c00deffe8030700f8ff09a1ba"
+              },
+              {
+                "at": 14.144999999999913,
+                "direction": "router_frame",
+                "hex": "fd1000005a019a490d03401540154037000000000000000000016baa",
+                "name": "NODE_HEALTH",
+                "source": [
+                  1,
+                  154
+                ]
+              },
+              {
+                "at": 14.184999999999912,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd1000005a019a490d03401540154037000000000000000000016baa"
+              },
+              {
+                "at": 14.184999999999912,
+                "direction": "router_frame",
+                "hex": "fd09000000019e000000000000001208000403fb1d",
+                "name": "HEARTBEAT",
+                "source": [
+                  1,
+                  158
+                ]
+              },
+              {
+                "at": 14.204999999999911,
+                "direction": "router_frame",
+                "hex": "fd0f00003201011a00006c1000000c00deffe8030700f8ff0936bc",
+                "name": "SCALED_IMU",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 14.24499999999991,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0f00003201011a00006c1000000c00deffe8030700f8ff0936bc"
+              },
+              {
+                "at": 14.24499999999991,
+                "direction": "router_frame",
+                "hex": "fd0900005b019a000000000000000000000403eb03",
+                "name": "HEARTBEAT",
+                "source": [
+                  1,
+                  154
+                ]
+              },
+              {
+                "at": 14.28499999999991,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0900005b019a000000000000000000000403eb03"
+              },
+              {
+                "at": 14.28499999999991,
+                "direction": "router_frame",
+                "hex": "fd04000001019e490d038015801575ea",
+                "name": "NODE_HEALTH",
+                "source": [
+                  1,
+                  158
+                ]
+              },
+              {
+                "at": 14.30499999999991,
+                "direction": "router_frame",
+                "hex": "fd0f00003301011a0000d01000000c00deffe8030700f8ff0951a3",
+                "name": "SCALED_IMU",
+                "source": [
+                  1,
+                  1
+                ]
+              },
+              {
+                "at": 14.344999999999908,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd0f00003301011a0000d01000000c00deffe8030700f8ff0951a3"
               }
             ],
             "valid_fields": 3
+          }
+        },
+        {
+          "event": "integrated_check",
+          "evidence": {
+            "now": 15.001000000000001,
+            "sample_at": 10.0,
+            "valid_fields": 0
           }
         },
         {
@@ -5053,85 +5057,85 @@
           },
           {
             "address": 104,
-            "at": 10.159999999999997,
+            "at": 10.179999999999996,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.259999999999994,
+            "at": 10.279999999999994,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.359999999999992,
+            "at": 10.379999999999992,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.45999999999999,
+            "at": 10.47999999999999,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.559999999999988,
+            "at": 10.579999999999988,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.659999999999986,
+            "at": 10.679999999999986,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.759999999999984,
+            "at": 10.779999999999983,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.859999999999982,
+            "at": 10.879999999999981,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 10.95999999999998,
+            "at": 10.979999999999979,
             "length": 12,
             "op": "imu",
             "register": 16
           },
           {
             "address": 104,
-            "at": 11.099999999999977,
+            "at": 11.119999999999976,
             "length": 12,
             "op": "imu",
             "register": 16
           }
         ],
         "pi_health_frame": {
-          "at": 11.019999999999978,
+          "at": 11.079999999999977,
           "direction": "router_to_ground",
-          "hex": "fd0b00000b0101490d03d0c0b0a0fb030000000003db38",
+          "hex": "fd0b00000c0101490d03d0c0b0a0370400000000032590",
           "name": "NODE_HEALTH"
         },
         "scaled_imu_frame": {
-          "at": 11.099999999999977,
+          "at": 11.119999999999976,
           "direction": "router_to_ground",
-          "hex": "fd0f00000c01011a00004b0400000a00ecffe80304000500067091",
+          "hex": "fd0f00000d01011a00005f0400000a00ecffe8030400050006c7b1",
           "name": "SCALED_IMU"
         },
         "source": [
@@ -5147,6 +5151,7 @@
       "evidence": {
         "fault_flags": 2,
         "fault_valid_fields": 0,
+        "recovered_valid_fields": 3,
         "sample_fields": {
           "xacc": 12,
           "xgyro": 7,
@@ -5157,214 +5162,39 @@
         },
         "trace": [
           {
-            "at": 13.359999999999928,
+            "at": 13.82499999999992,
             "direction": "relay_to_gateway_usb",
-            "hex": "fd09000049019a00000000000000000000040352b6"
-          },
-          {
-            "at": 13.359999999999928,
-            "direction": "router_frame",
-            "hex": "fd04000001019e490d038015801575ea",
-            "name": "NODE_HEALTH",
-            "source": [
-              1,
-              158
-            ]
-          },
-          {
-            "at": 13.379999999999928,
-            "direction": "router_frame",
-            "hex": "fd0f00002601011a0000330d00000c00deffe8030700f8ff09128a",
-            "name": "SCALED_IMU",
-            "source": [
-              1,
-              1
-            ]
-          },
-          {
-            "at": 13.419999999999927,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd0f00002601011a0000330d00000c00deffe8030700f8ff09128a"
-          },
-          {
-            "at": 13.419999999999927,
-            "direction": "router_frame",
-            "hex": "fd1200004d019a420d036b3400000000000000000000000000000202bc56",
-            "name": "ACTUATOR_STATUS",
-            "source": [
-              1,
-              154
-            ]
-          },
-          {
-            "at": 13.459999999999926,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd1200004d019a420d036b3400000000000000000000000000000202bc56"
-          },
-          {
-            "at": 13.459999999999926,
-            "direction": "router_frame",
-            "hex": "fd09000000019e000000000000001208000403fb1d",
-            "name": "HEARTBEAT",
-            "source": [
-              1,
-              158
-            ]
-          },
-          {
-            "at": 13.479999999999926,
-            "direction": "router_frame",
-            "hex": "fd0f00002701011a0000970d00000c00deffe8030700f8ff093964",
-            "name": "SCALED_IMU",
-            "source": [
-              1,
-              1
-            ]
-          },
-          {
-            "at": 13.519999999999925,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd0f00002701011a0000970d00000c00deffe8030700f8ff093964"
-          },
-          {
-            "at": 13.544999999999925,
-            "direction": "router_frame",
-            "hex": "fd090000280101490d03d0c0b0a0d80d0000027aab",
-            "name": "NODE_HEALTH",
-            "source": [
-              1,
-              1
-            ]
-          },
-          {
-            "at": 13.564999999999925,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd090000280101490d03d0c0b0a0d80d0000027aab"
-          },
-          {
-            "at": 13.564999999999925,
-            "direction": "router_frame",
-            "hex": "fd1200004e019a420d03fc3400000000000000000000000000000102ebd1",
-            "name": "ACTUATOR_STATUS",
-            "source": [
-              1,
-              154
-            ]
-          },
-          {
-            "at": 13.604999999999924,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd1200004e019a420d03fc3400000000000000000000000000000102ebd1"
-          },
-          {
-            "at": 13.604999999999924,
-            "direction": "router_frame",
-            "hex": "fd04000001019e490d038015801575ea",
-            "name": "NODE_HEALTH",
-            "source": [
-              1,
-              158
-            ]
-          },
-          {
-            "at": 13.624999999999924,
-            "direction": "router_frame",
-            "hex": "fd0f00002901011a0000280e00000c00deffe8030700f8ff091c1d",
-            "name": "SCALED_IMU",
-            "source": [
-              1,
-              1
-            ]
-          },
-          {
-            "at": 13.664999999999923,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd0f00002901011a0000280e00000c00deffe8030700f8ff091c1d"
-          },
-          {
-            "at": 13.664999999999923,
-            "direction": "router_frame",
-            "hex": "fd12000051019a420d0360350000000000000000000000000000020219dc",
-            "name": "ACTUATOR_STATUS",
-            "source": [
-              1,
-              154
-            ]
-          },
-          {
-            "at": 13.704999999999922,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd12000051019a420d0360350000000000000000000000000000020219dc"
-          },
-          {
-            "at": 13.704999999999922,
-            "direction": "router_frame",
-            "hex": "fd09000000019e000000000000001208000403fb1d",
-            "name": "HEARTBEAT",
-            "source": [
-              1,
-              158
-            ]
-          },
-          {
-            "at": 13.724999999999921,
-            "direction": "router_frame",
-            "hex": "fd0f00002a01011a00008c0e00000c00deffe8030700f8ff099ca9",
-            "name": "SCALED_IMU",
-            "source": [
-              1,
-              1
-            ]
-          },
-          {
-            "at": 13.76499999999992,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd0f00002a01011a00008c0e00000c00deffe8030700f8ff099ca9"
-          },
-          {
-            "at": 13.76499999999992,
-            "direction": "router_frame",
-            "hex": "fd12000052019a420d03c435000000000000000000000000000001029f62",
-            "name": "ACTUATOR_STATUS",
-            "source": [
-              1,
-              154
-            ]
-          },
-          {
-            "at": 13.80499999999992,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd12000052019a420d03c435000000000000000000000000000001029f62"
-          },
-          {
-            "at": 13.80499999999992,
-            "direction": "router_frame",
-            "hex": "fd04000001019e490d038015801575ea",
-            "name": "NODE_HEALTH",
-            "source": [
-              1,
-              158
-            ]
+            "hex": "fd12000052019a420d03d835000000000000000000000000000001029cf9"
           },
           {
             "at": 13.82499999999992,
             "direction": "router_frame",
-            "hex": "fd0f00002b01011a0000f00e00000c00deffe8030700f8ff09ec04",
-            "name": "SCALED_IMU",
+            "hex": "fd04000001019e490d038015801575ea",
+            "name": "NODE_HEALTH",
+            "source": [
+              1,
+              158
+            ]
+          },
+          {
+            "at": 13.844999999999919,
+            "direction": "router_frame",
+            "hex": "fd0900002c0101490d03d0c0b0a0040f000002a7e1",
+            "name": "NODE_HEALTH",
             "source": [
               1,
               1
             ]
           },
           {
-            "at": 13.864999999999919,
+            "at": 13.884999999999918,
             "direction": "relay_to_gateway_usb",
-            "hex": "fd0f00002b01011a0000f00e00000c00deffe8030700f8ff09ec04"
+            "hex": "fd0900002c0101490d03d0c0b0a0040f000002a7e1"
           },
           {
-            "at": 13.864999999999919,
+            "at": 13.884999999999918,
             "direction": "router_frame",
-            "hex": "fd12000055019a420d03283600000000000000000000000000000202f48e",
+            "hex": "fd12000055019a420d033c3600000000000000000000000000000202fbaf",
             "name": "ACTUATOR_STATUS",
             "source": [
               1,
@@ -5372,12 +5202,12 @@
             ]
           },
           {
-            "at": 13.904999999999918,
+            "at": 13.924999999999917,
             "direction": "relay_to_gateway_usb",
-            "hex": "fd12000055019a420d03283600000000000000000000000000000202f48e"
+            "hex": "fd12000055019a420d033c3600000000000000000000000000000202fbaf"
           },
           {
-            "at": 13.904999999999918,
+            "at": 13.924999999999917,
             "direction": "router_frame",
             "hex": "fd09000000019e000000000000001208000403fb1d",
             "name": "HEARTBEAT",
@@ -5387,17 +5217,196 @@
             ]
           },
           {
-            "at": 13.924999999999917,
+            "at": 13.944999999999917,
             "direction": "router_frame",
-            "hex": "fd0f00002c01011a0000540f00000c00deffe8030700f8ff09104d",
+            "hex": "fd0f00002d01011a0000680f00000c00deffe8030700f8ff096276",
             "name": "SCALED_IMU",
             "source": [
               1,
               1
             ]
+          },
+          {
+            "at": 13.944999999999917,
+            "direction": "router_frame",
+            "hex": "fd0b00002e0101490d03d0c0b0a0680f00000000034c75",
+            "name": "NODE_HEALTH",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 13.964999999999916,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0f00002d01011a0000680f00000c00deffe8030700f8ff096276"
+          },
+          {
+            "at": 13.984999999999916,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0b00002e0101490d03d0c0b0a0680f00000000034c75"
+          },
+          {
+            "at": 13.984999999999916,
+            "direction": "router_frame",
+            "hex": "fd0f00002f01011a0000900f00000c00deffe8030700f8ff099324",
+            "name": "SCALED_IMU",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 14.024999999999915,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0f00002f01011a0000900f00000c00deffe8030700f8ff099324"
+          },
+          {
+            "at": 14.024999999999915,
+            "direction": "router_frame",
+            "hex": "fd12000056019a420d03c836000000000000000000000000000001024195",
+            "name": "ACTUATOR_STATUS",
+            "source": [
+              1,
+              154
+            ]
+          },
+          {
+            "at": 14.064999999999914,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd12000056019a420d03c836000000000000000000000000000001024195"
+          },
+          {
+            "at": 14.064999999999914,
+            "direction": "router_frame",
+            "hex": "fd090000300101000000000000001200000403bf62",
+            "name": "HEARTBEAT",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 14.084999999999914,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd090000300101000000000000001200000403bf62"
+          },
+          {
+            "at": 14.084999999999914,
+            "direction": "router_frame",
+            "hex": "fd04000001019e490d038015801575ea",
+            "name": "NODE_HEALTH",
+            "source": [
+              1,
+              158
+            ]
+          },
+          {
+            "at": 14.104999999999913,
+            "direction": "router_frame",
+            "hex": "fd0f00003101011a0000081000000c00deffe8030700f8ff09a1ba",
+            "name": "SCALED_IMU",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 14.144999999999913,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0f00003101011a0000081000000c00deffe8030700f8ff09a1ba"
+          },
+          {
+            "at": 14.144999999999913,
+            "direction": "router_frame",
+            "hex": "fd1000005a019a490d03401540154037000000000000000000016baa",
+            "name": "NODE_HEALTH",
+            "source": [
+              1,
+              154
+            ]
+          },
+          {
+            "at": 14.184999999999912,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd1000005a019a490d03401540154037000000000000000000016baa"
+          },
+          {
+            "at": 14.184999999999912,
+            "direction": "router_frame",
+            "hex": "fd09000000019e000000000000001208000403fb1d",
+            "name": "HEARTBEAT",
+            "source": [
+              1,
+              158
+            ]
+          },
+          {
+            "at": 14.204999999999911,
+            "direction": "router_frame",
+            "hex": "fd0f00003201011a00006c1000000c00deffe8030700f8ff0936bc",
+            "name": "SCALED_IMU",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 14.24499999999991,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0f00003201011a00006c1000000c00deffe8030700f8ff0936bc"
+          },
+          {
+            "at": 14.24499999999991,
+            "direction": "router_frame",
+            "hex": "fd0900005b019a000000000000000000000403eb03",
+            "name": "HEARTBEAT",
+            "source": [
+              1,
+              154
+            ]
+          },
+          {
+            "at": 14.28499999999991,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0900005b019a000000000000000000000403eb03"
+          },
+          {
+            "at": 14.28499999999991,
+            "direction": "router_frame",
+            "hex": "fd04000001019e490d038015801575ea",
+            "name": "NODE_HEALTH",
+            "source": [
+              1,
+              158
+            ]
+          },
+          {
+            "at": 14.30499999999991,
+            "direction": "router_frame",
+            "hex": "fd0f00003301011a0000d01000000c00deffe8030700f8ff0951a3",
+            "name": "SCALED_IMU",
+            "source": [
+              1,
+              1
+            ]
+          },
+          {
+            "at": 14.344999999999908,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd0f00003301011a0000d01000000c00deffe8030700f8ff0951a3"
           }
         ],
         "valid_fields": 3
+      },
+      "scenario": 2
+    },
+    {
+      "event": "integrated_check",
+      "evidence": {
+        "now": 15.001000000000001,
+        "sample_at": 10.0,
+        "valid_fields": 0
       },
       "scenario": 2
     },
@@ -7292,7 +7301,7 @@
     {
       "event": "scenario_complete",
       "scenario": 2,
-      "status": "FAIL"
+      "status": "PASS"
     },
     {
       "event": "scenario_complete",
