@@ -71,6 +71,7 @@ static uint8_t tx_frame[MOTOR_MAILBOX_BYTES];
 static uint8_t tx_position;
 static volatile bool tx_loaded;
 static volatile bool tx_read_started;
+static volatile bool tx_reply_available;
 
 static int8_t quadrature_delta(uint8_t previous, uint8_t current) {
   static const int8_t transitions[16] = {
@@ -174,13 +175,17 @@ static void i2c_event(i2c_inst_t *i2c, i2c_slave_event_t event) {
       else rx_overflow = true;
     }
   } else if (event == I2C_SLAVE_REQUEST) {
+    if (!tx_read_started) tx_reply_available = tx_loaded;
     tx_read_started = true;
-    if (tx_loaded && i2c_get_write_available(i2c)) {
-      if (tx_position < MOTOR_MAILBOX_BYTES) {
+    if (i2c_get_write_available(i2c)) {
+      if (!tx_reply_available) {
+        /* Never hold SCL while the main loop prepares the next reply. */
+        i2c_write_byte_raw(i2c, 0);
+      } else if (tx_position < MOTOR_MAILBOX_BYTES) {
         i2c_write_byte_raw(i2c, tx_frame[tx_position]);
         tx_position++;
       } else {
-        /* One-byte lookahead sentinel: a 64-byte read must request byte 65. */
+        /* Pad non-contract over-reads so the empty TX FIFO cannot stretch SCL. */
         i2c_write_byte_raw(i2c, 0);
         if (tx_position == MOTOR_MAILBOX_BYTES) tx_position++;
       }
@@ -195,9 +200,13 @@ static void i2c_event(i2c_inst_t *i2c, i2c_slave_event_t event) {
       rx_overflow = false;
     }
     if (tx_read_started) {
-      if (tx_position > MOTOR_MAILBOX_BYTES) tx_loaded = false;
+      /* REQUEST means the master asked for this byte while TX FIFO was empty.
+       * FINISH has no byte-count/reason field: full 64-byte reads complete at
+       * 64 requests, short reads retain the frame, and excess bytes are padded. */
+      if (tx_position >= MOTOR_MAILBOX_BYTES) tx_loaded = false;
       tx_position = 0;
       tx_read_started = false;
+      tx_reply_available = false;
     }
   }
 }
