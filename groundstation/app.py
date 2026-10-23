@@ -40,8 +40,12 @@ def _call_background(fn, *args):
             STATE.enqueue(exc)
             with STATE.lock:
                 STATE.detail = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, ValueError):
+                    STATE.busy = False
+                    STATE.uncertain = False
                 if STATE.connected:
-                    STATE.uncertain = True
+                    if not isinstance(exc, ValueError):
+                        STATE.uncertain = True
     return _WORKERS.submit(run)
 
 
@@ -127,7 +131,13 @@ def _client_action(method, *args):
             with STATE.lock:
                 STATE.busy = True
                 STATE.uncertain = True
-        result = getattr(client, method)(*args)
+        try:
+            result = getattr(client, method)(*args)
+        except ValueError:
+            with STATE.lock:
+                STATE.busy = False
+                STATE.uncertain = False
+            raise
         return result
 
 
@@ -143,46 +153,46 @@ def build_ui(ui):
 
         with ui.card().classes("w-full"):
             ui.label("Connection").classes("text-lg font-medium")
-            with ui.row().classes("w-full items-end gap-3"):
+            with ui.row().classes("w-full flex-wrap items-end gap-3"):
                 mode = ui.select(["LoRa · ground Pico USB", "SSH · Pi bridge",
                                   "SIMULATION · generated values"], value="SIMULATION · generated values",
-                                 label="Transport")
-                port = ui.input("USB serial port", value="/dev/ttyACM0")
-                baud = ui.number("Baud", value=115200, min=1200, max=3000000, precision=0)
-                host = ui.input("SSH config host alias", value="boat-pi")
+                                 label="Transport").classes("w-64")
+                port = ui.input("USB serial port", value="/dev/ttyACM0").classes("w-56")
+                baud = ui.number("Baud", value=115200, min=1200, max=3000000, precision=0).classes("w-36")
+                host = ui.input("SSH config host alias", value="boat-pi").classes("w-56")
                 connect_btn = ui.button("Connect", color="primary")
                 disconnect_btn = ui.button("Disconnect", color="secondary")
                 ping_btn = ui.button("Ping all nodes")
                 disconnect_btn.disable()
                 ping_btn.disable()
-            ui.label("SSH uses ~/.ssh/config, BatchMode, strict host key checking, and the fixed command python3 -m onboard.bridge.").classes("text-xs text-slate-600")
+            ui.label("SSH uses ~/.ssh/config, strict host key checking, and python3 -m onboard bridge --config /etc/arsem/onboard.toml.").classes("text-xs text-slate-600")
 
-        with ui.row().classes("w-full items-stretch"):
-            with ui.card().classes("grow min-w-80"):
+        with ui.row().classes("w-full flex-wrap items-stretch"):
+            with ui.card().classes("grow basis-80 min-w-0"):
                 ui.label("Actuator control").classes("text-lg font-medium")
                 ui.label("Movement uses fresh measured feedback. The displayed angle is measured feedback when the peer reports it; simulation is always labeled.").classes("text-sm")
-                with ui.row().classes("items-end"):
-                    actuator = ui.select({0: "Rudder", 1: "Sail"}, value=0, label="Actuator")
+                with ui.row().classes("w-full flex-wrap items-end gap-3"):
+                    actuator = ui.select({1: "Sail", 2: "Rudder"}, value=1, label="Actuator").classes("w-40")
                     absolute = ui.number("Absolute angle (degrees)", value=0, min=-327.67,
-                                         max=327.67, step=0.01, precision=2)
+                                         max=327.67, step=0.01, precision=2).classes("w-56")
                     absolute_btn = ui.button("Set absolute angle", color="primary")
-                with ui.row().classes("items-end"):
+                with ui.row().classes("w-full flex-wrap items-end gap-3"):
                     step_size = ui.number("Step size (degrees)", value=5, min=0.01,
-                                          max=327.67, step=0.5, precision=2)
+                                          max=327.67, step=0.5, precision=2).classes("w-48")
                     left_btn = ui.button("− Step")
                     right_btn = ui.button("+ Step")
                     stop_btn = ui.button("STOP", color="negative")
                     for button in (absolute_btn, left_btn, right_btn, stop_btn):
                         button.disable()
                 motor_text = ui.label("Motor: no status").classes("whitespace-pre-wrap text-sm")
-            with ui.card().classes("grow min-w-80"):
+            with ui.card().classes("grow basis-80 min-w-0"):
                 ui.label("Nodes").classes("text-lg font-medium")
                 node_labels = {}
-                with ui.row().classes("w-full items-stretch"):
+                with ui.row().classes("w-full flex-wrap items-stretch"):
                     for key, title in (((1, 1), "Pi · router / IMU"),
                                        ((1, 154), "Motor Pico"),
                                        ((1, 158), "Sensors / comms Pico")):
-                        with ui.card().classes("grow min-w-52"):
+                        with ui.card().classes("grow basis-52 min-w-0"):
                             ui.label(title).classes("font-medium")
                             node_labels[key] = ui.label("No heartbeat/status").classes("whitespace-pre-wrap text-sm")
 
@@ -238,18 +248,26 @@ def build_ui(ui):
                 stop_btn.set_enabled(connected)
                 for field in (mode, port, baud, host):
                     field.set_enabled(not connected)
-                if STATE.motor_report:
-                    m = STATE.motor_report
-                    age = max(0.0, now - STATE.nodes.get(m.source, {}).get("feedback_seen", now))
+                selected_actuator = int(actuator.value)
+                selected_report = STATE.motor_reports.get(selected_actuator)
+                selected_move = STATE.can_move_actuator(selected_actuator)
+                absolute_btn.set_enabled(selected_move)
+                left_btn.set_enabled(selected_move)
+                right_btn.set_enabled(selected_move)
+                if selected_report:
+                    m = selected_report
+                    age = max(0.0, now - STATE.motor_report_at.get(selected_actuator, now))
+                    measured = (f"{m.measured_position_cdeg / 100:.2f}°" if STATE.feedback_valid
+                                else "invalid")
                     motor_text.set_text(
-                        f"Source {m.source[0]}/{m.source[1]} · sample age {age:.1f}s\n"
-                        f"Measured: {m.measured_position_cdeg / 100:.2f}° · requested: {m.requested_position_cdeg / 100:.2f}°\n"
+                        f"{('Sail' if selected_actuator == 1 else 'Rudder')} · source {m.source[0]}/{m.source[1]} · sample age {age:.1f}s\n"
+                        f"Measured: {measured} · requested: {m.requested_position_cdeg / 100:.2f}°\n"
                         f"Enabled: {bool(m.enabled)} · faults: 0x{m.fault_flags:04x} · result: {m.result}\n"
                         f"Feedback valid: {STATE.feedback_valid} · busy: {STATE.busy} · outcome uncertain: {STATE.uncertain}"
                         + ("\nSTALE FEEDBACK · movement disabled" if age > 5.0 else "")
                         + ("\nSIMULATED MEASUREMENTS" if simulation else ""))
                 else:
-                    motor_text.set_text("Motor: no fresh status; movement disabled." +
+                    motor_text.set_text(f"{('Sail' if selected_actuator == 1 else 'Rudder')}: no measured status; movement disabled." +
                                         ("\nSIMULATION MODE" if simulation else ""))
                 for source, label in node_labels.items():
                     node = STATE.nodes.get(source, {})
@@ -294,7 +312,8 @@ def build_ui(ui):
                 else:
                     imu_text.set_text("No IMU sample received. Acceleration is mg; angular rate is mrad/s. Acquisition owner: Pi.")
                 recent_trace = list(STATE.trace)[-30:]
-                trace_text.set_text("\n".join(json.dumps(item, default=str, separators=(",", ":"))
+                trace_text.set_text((f"TRACE EVENTS DROPPED: {STATE.trace_drops}\n" if STATE.trace_drops else "") +
+                                    "\n".join(json.dumps(item, default=str, separators=(",", ":"))
                                                for item in reversed(recent_trace)) or "Waiting for events.")
 
         connect_btn.on_click(lambda: _call_background(_connect, mode.value, port.value,
@@ -327,5 +346,5 @@ def main():
            show=False)
 
 
-if __name__ in {"__main__", "groundstation.app"}:
+if __name__ == "__main__":
     main()

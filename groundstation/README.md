@@ -17,14 +17,14 @@ Open `http://127.0.0.1:8080`. To choose another local port use `--port 8081`. Bi
 The app's connection choices are:
 
 - **LoRa · ground Pico USB**: USB serial carries raw unsigned MAVLink from the ground Pico. The Pico handles the radio modem envelope.
-- **SSH · Pi bridge**: persistent SSH through a host alias in `~/.ssh/config`; SSH must already trust the host key. The only remote command is `python3 -m onboard.bridge`; stdout is raw MAVLink and stderr is bridge logging.
-- **SIMULATION · generated values**: deterministic local peers encoded through `protocol.codec`; simulated motor feedback and IMU values remain labeled in the interface.
+- **SSH · Pi bridge**: persistent SSH through a host alias in `~/.ssh/config`; SSH must already trust the host key. The fixed remote command is `python3 -m onboard bridge --config /etc/arsem/onboard.toml`; stdout is raw MAVLink and stderr is bridge logging.
+- **SIMULATION · generated values**: local peers encoded through `protocol.codec`; each connection gets a random simulated boot identity, and periodic motor, health, and IMU values remain labeled in the interface.
 
-The SSH host field accepts an SSH config alias, not a shell command. The application invokes `ssh -T` with `BatchMode=yes`, `StrictHostKeyChecking=yes`, and `ClearAllForwardings=yes`. It does not disable host checks or prompt for a password.
+The SSH host field accepts an SSH config alias, not a shell command. The application invokes `ssh -T` with `BatchMode=yes`, `StrictHostKeyChecking=yes`, and `ClearAllForwardings=yes`. It does not disable host checks or prompt for a password. The Pi installation must expose the `onboard` package to `python3` from its configured environment and support the documented `onboard bridge --config` command.
 
 `groundstation.app.set_transport_factory(kind, factory)` replaces the `serial`, `ssh`, or `simulation` constructor before `build_ui` / `ui.run`. The factory receives `(port_or_alias, baud)` and returns a `boat.client.Transport`. This is the seam for wiring a real onboard-router simulator while keeping traffic on the same `BoatClient` and `protocol.codec` path.
 
-Movement buttons stay disabled until the connected transport has reported recent motor status and a motor health record with valid feedback. The visible range for absolute/step input is the signed `int16` centidegree wire range; it is not a claim about installed hardware travel. A transport reconnect creates a new client session and does not resend movement. An uncertain request needs a fresh motor status before new movement is enabled. STOP is a separate opcode with zero delta.
+Movement buttons stay disabled until the connected transport has reported recent status for the selected actuator and a motor health record with valid feedback. Actuator IDs are sail `1` and rudder `2`. The visible range for absolute/step input is the signed `int16` centidegree wire range; it is not a claim about installed hardware travel. A transport reconnect creates a new client session and does not resend movement. An uncertain request needs fresh motor status before new movement is enabled. STOP is a separate opcode with zero delta.
 
 ## CLI
 
@@ -36,7 +36,7 @@ python3 -m groundstation.cli --serial /dev/ttyACM0 --baud 115200
 python3 -m groundstation.cli --ssh boat-pi
 ```
 
-Commands are `absolute <degrees> [actuator 0|1]`, `step [+|- degrees] [actuator]`, `stop [actuator]`, `ping`, `status`, and `quit`. The CLI exposes the same `BoatClient` methods as the GUI. It records events and reports command ticket IDs; transport reality and feedback validity remain protocol observations.
+Commands are `absolute <degrees> [actuator 1|2]`, `step [degrees [actuator 1|2]]`, `stop [actuator 1|2]`, `ping`, `status`, and `quit`. A bare `step` uses `--step-deg` (default 5); `step -5` sends a negative five degree step. The CLI exposes the same `BoatClient` methods as the GUI. It records events and reports command ticket IDs; transport reality and feedback validity remain protocol observations.
 
 ## Headless checks
 
