@@ -30,7 +30,7 @@ Supported: custom 200000–200010 plus standard `HEARTBEAT` (0), `PING` (4), `SC
 
 ### Hard behavioral rules
 
-1. Reboots/reconnects invalidate queued movement: a `boot_id` or `ground_session` change makes pending requests STALE/UNKNOWN; fresh status/session reconciliation precedes new movement. New movement requires a valid reference and fresh feedback, with no active move, fault, or stale/unknown request. `output_enabled=0` is the normal idle state and does not by itself mean the motor is unready.
+1. Reboots/reconnects invalidate queued movement: a `boot_id` or `ground_session` change makes pending requests STALE/UNKNOWN; fresh status/session reconciliation precedes new movement. New movement requires a valid reference and fresh feedback, with no active move, fault, or stale/unknown request. `ACTUATOR_STATUS.enabled=0` is the normal idle state and does not by itself mean the motor is unready.
 2. Never replay motion after reconnect; never auto-fail-over an uncertain movement between transports. A failed/ambiguous write becomes UNKNOWN, followed by status inspection — not another movement write.
 3. Duplicate/reordered requests never apply twice (`request_id` + `ground_session` + `boot_id` correlation at Pi and motor). Busy motors do not restart/extend an action for a concurrent second client; the newer request may only supersede explicitly (SUPERSEDED result to the older one).
 4. Wrong target/source/authority, unsupported message, signed frame, or damaged CRC can never energize a motor. SSH bypasses only the radio hop — not routing, identity, authority, or validation.

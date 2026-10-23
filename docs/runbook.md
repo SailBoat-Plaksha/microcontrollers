@@ -4,8 +4,8 @@ Commands below run from the repository root. Host checks use simulation, fakes, 
 
 ## Requirements
 
-- Python 3.10 or newer for the Python packages.
-- `g++` for the legacy sail motor bench tests and motor host harness.
+- Python 3.11 or newer for the Python packages.
+- `g++` for the legacy sail motor bench tests and a C11 compiler (`cc`) for the motor host harness.
 - `cmake` and Raspberry Pi Pico SDK 2.2.0 for a Pico 2 firmware build. These are not currently available in the implementation environment; firmware has not been built or flashed here.
 
 ## Software-only setup and checks
