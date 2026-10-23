@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 import queue
+import io
+from contextlib import redirect_stderr
 
 from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_BOAT, SYSTEM_GROUND
 from protocol import codec
@@ -26,28 +28,28 @@ class Clock:
         self.value += seconds
 
 
-def ground_request(request_id=1, opcode=2, delta=500, session=123):
+def ground_request(request_id=1, opcode=2, delta=500, session=123, actuator=1):
     return codec.encode("ACTUATOR_REQUEST", {
         "request_id": request_id, "ground_session": session, "delta_cdeg": delta,
         "timeout_ms": 2000, "max_rate_cdeg_s": 500,
         "target_system": SYSTEM_BOAT, "target_component": COMPONENT_MOTOR,
-        "actuator": 1, "opcode": opcode, "control_source": 3,
+        "actuator": actuator, "opcode": opcode, "control_source": 3,
     }, system=SYSTEM_GROUND, component=COMPONENT_GROUND, sequence=request_id)
 
 
-def health(boot=55, feedback=1):
+def health(boot=55, feedback=1, fault_flags=0):
     return codec.encode("NODE_HEALTH", {
-        "boot_id": boot, "time_boot_ms": 100, "fault_flags": 0,
+        "boot_id": boot, "time_boot_ms": 100, "fault_flags": fault_flags,
         "sensor_valid_fields": 0, "queue_drops": 0, "reset_reason": 0,
         "feedback_valid": feedback,
     }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
 
 
-def status(boot_ms=100):
+def status(boot_ms=100, actuator=1, result=0, control_source=3, fault_flags=0, enabled=0):
     return codec.encode("ACTUATOR_STATUS", {
         "time_boot_ms": boot_ms, "command_id": 0, "requested_position_cdeg": 0,
-        "measured_position_cdeg": 0, "velocity_cdeg_s": 0, "fault_flags": 0,
-        "actuator": 1, "control_source": 3, "result": 0, "enabled": 0,
+        "measured_position_cdeg": 0, "velocity_cdeg_s": 0, "fault_flags": fault_flags,
+        "actuator": actuator, "control_source": control_source, "result": result, "enabled": enabled,
     }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
 
 
@@ -95,7 +97,10 @@ class RouterTests(unittest.TestCase):
         self.router.submit_frame(ground_request(request_id=1, opcode=1, delta=100))
         self.router.submit_frame(ground_request(request_id=2, opcode=3, delta=0))
         self.router.step()
-        write = next(op for op in self.bus.operations if op.kind == "write")
+        self.router.step()
+        writes = [op for op in self.bus.operations if op.kind == "write"]
+        self.assertEqual(len(writes), 1)
+        write = writes[0]
         fields = codec.decode(self.router._decode_mailbox(write.data))["fields"]
         self.assertEqual((fields["request_id"], fields["opcode"], fields["delta_cdeg"]), (2, 3, 0))
 
@@ -134,18 +139,22 @@ class RouterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.router._decode_mailbox((frame + frame).ljust(64, b"\0"))
 
-    def test_session_change_marks_previous_pending_outcome_unknown(self):
-        self.router.submit_frame(ground_request(request_id=1, opcode=3, delta=0, session=123))
-        self.router.submit_frame(ground_request(request_id=1, opcode=3, delta=0, session=456))
-        self.assertTrue(any("session changed" in e.detail for e in self.events))
-
-    def test_session_change_removes_unsent_old_movement(self):
+    def test_session_change_cannot_replace_pending_owner_motion(self):
         self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=123)))
-        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=456)))
+        queued = self.router._normal.pop()
+        self.router._write(queued)
+        current_queue = [(item.key, item.frame) for item in self.router._normal]
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=1, session=456)))
+        self.assertEqual(self.router._sessions[(SYSTEM_GROUND, COMPONENT_GROUND)], 123)
+        self.assertEqual([(item.key, item.frame) for item in self.router._normal], current_queue)
+
+    def test_explicit_stop_from_new_session_supersedes_unsent_motion(self):
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=123)))
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, opcode=3, delta=0, session=456)))
         self.router.step()
         write = next(op for op in self.bus.operations if op.kind == "write" and op.address == 0x08)
         moved = codec.decode(self.router._decode_mailbox(write.data))["fields"]
-        self.assertEqual((moved["request_id"], moved["ground_session"]), (1, 456))
+        self.assertEqual((moved["request_id"], moved["ground_session"], moved["opcode"]), (1, 456, 3))
         old_results = [codec.decode(frame)["fields"] for frame in self.output
                        if codec.decode(frame)["name"] == "REQUEST_RESULT"]
         self.assertTrue(any(result["ground_session"] == 123 and result["result"] == 4
@@ -154,27 +163,49 @@ class RouterTests(unittest.TestCase):
     def test_full_queue_admits_stop_and_evicts_routine_traffic(self):
         router = BoatRouter(self.bus, ServiceConfig(queue_limit=4), clock=self.clock,
                             on_frame=self.output.append, on_event=self.events.append)
-        router.node_health[(SYSTEM_BOAT, COMPONENT_MOTOR)] = (self.clock(), 55, 1)
+        router.node_health[(SYSTEM_BOAT, COMPONENT_MOTOR)] = (self.clock(), 55, 1, 0)
         router.node_boot_ids[(SYSTEM_BOAT, COMPONENT_MOTOR)] = 55
-        router.motor_status_at = self.clock()
+        router.motor_status_at[1] = self.clock()
+        router.motor_status[1] = codec.decode(status())["fields"]
         router.motor_reconcile_required = False
         for frame in (status(), health(), codec.encode("LINK_STATUS", {
                 "time_boot_ms": 1, "rx_packets": 0, "tx_packets": 0,
                 "rx_errors": 0, "tx_errors": 0, "address": 0,
                 "rssi_dbm": 0, "snr_cdb": 0, "link_type": 1,
-                "connected": 1}, system=1, component=1),
+                "connected": 1}, system=SYSTEM_BOAT, component=COMPONENT_MOTOR),
                 codec.encode("SCALED_IMU", {
                     "time_boot_ms": 1, "xacc": 0, "yacc": 0, "zacc": 0,
                     "xgyro": 0, "ygyro": 0, "zgyro": 0, "xmag": 0,
-                    "ymag": 0, "zmag": 0, "temperature": 0}, system=1, component=1)):
-            router._queue(frame, 0x09, 2)
+                    "ymag": 0, "zmag": 0, "temperature": 0},
+                    system=SYSTEM_BOAT, component=COMPONENT_MOTOR)):
+            router._observe_node_message(codec.decode(frame), frame)
         self.assertEqual(router.queued_writes, 4)
+        self.assertFalse(router.submit_frame(ground_request(request_id=2, opcode=1, delta=100)))
+        self.assertFalse(any(item.key and item.key[3] == 2 for item in router._normal))
+        self.assertFalse(any("request received; motor processing is pending" in event.detail
+                             and event.frame and codec.decode(event.frame)["fields"]["request_id"] == 2
+                             for event in self.events))
         self.assertTrue(router.submit_frame(ground_request(request_id=1, opcode=3, delta=0)))
-        self.assertEqual(router.queued_writes, 4)
+        self.assertEqual(router.queued_writes, 5)
         self.assertEqual(len(router._stops), 1)
         router.step()
         written = next(op for op in self.bus.operations if op.kind == "write")
         self.assertEqual(codec.decode(router._decode_mailbox(written.data))["fields"]["opcode"], 3)
+
+    def test_stop_reserve_admits_when_bounded_request_ledger_is_full(self):
+        router = BoatRouter(self.bus, ServiceConfig(queue_limit=4), clock=self.clock,
+                            on_frame=self.output.append, on_event=self.events.append)
+        router._observe_node_message(codec.decode(health()), health())
+        router._observe_node_message(codec.decode(status()), status())
+        for request_id in range(100, 116):
+            key = (SYSTEM_GROUND, COMPONENT_GROUND, 123, request_id)
+            fields = codec.decode(ground_request(request_id=request_id))["fields"]
+            router._remember_request(key, fields, "ssh")
+            router._make_result(key, 55, 0, 0, 1, "pending")
+        self.assertEqual(len(router._requests), 16)
+        self.assertTrue(router.submit_frame(ground_request(request_id=1, opcode=3, delta=0)))
+        self.assertEqual(len(router._stops), 1)
+        self.assertEqual(len(router._requests), 17)
 
     def test_boot_change_purges_queued_motion_until_health_and_status_reconcile(self):
         self.router._normal.clear()
@@ -189,11 +220,73 @@ class RouterTests(unittest.TestCase):
 
     def test_delayed_retired_session_cannot_replace_current_session(self):
         self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=123)))
+        self.router._write(self.router._normal.pop())
+        terminal = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 1, "motor_boot_id": 55,
+            "local_command_id": 1, "result": 1, "state": 4,
+            "target_system": SYSTEM_GROUND, "target_component": COMPONENT_GROUND,
+        }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+        self.router._observe_node_message(codec.decode(terminal), terminal)
         self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=456)))
         current_queue = [(item.key, item.frame) for item in self.router._normal if item.key]
         self.assertFalse(self.router.submit_frame(ground_request(request_id=2, session=123)))
         self.assertEqual(self.router._sessions[(SYSTEM_GROUND, COMPONENT_GROUND)], 456)
         self.assertEqual([(item.key, item.frame) for item in self.router._normal if item.key], current_queue)
+
+    def test_motor_boot_change_retires_session_and_preserves_old_boot_unknown(self):
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, opcode=3, delta=0)))
+        changed = health(boot=56)
+        self.router._observe_node_message(codec.decode(changed), changed)
+        self.assertIn((SYSTEM_GROUND, COMPONENT_GROUND, 123), self.router._retired_sessions)
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=2, session=123)))
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=3, opcode=3, delta=0, session=123)))
+        unknown = [codec.decode(frame) for frame in self.output if codec.decode(frame)["name"] == "REQUEST_RESULT"]
+        self.assertTrue(any(msg["fields"]["request_id"] == 1 and
+                            msg["fields"]["motor_boot_id"] == 55 and msg["fields"]["result"] == 0
+                            for msg in unknown))
+
+    def test_actuator_readiness_uses_selected_fault_free_status_not_enabled_bit(self):
+        self.assertTrue(self.router.submit_frame(ground_request(actuator=1)))
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=2, actuator=2)))
+        frame = status(actuator=2, enabled=0)
+        self.router._observe_node_message(codec.decode(frame), frame)
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=3, actuator=2)))
+        for rid, status_frame in (
+            (4, status(actuator=2, result=1)),
+            (5, status(actuator=2, result=0, control_source=1)),
+            (6, status(actuator=2, result=0, fault_flags=1)),
+        ):
+            self.router._observe_node_message(codec.decode(status_frame), status_frame)
+            self.assertFalse(self.router.submit_frame(ground_request(request_id=rid, actuator=2)))
+
+    def test_health_faults_deny_movement_even_with_valid_feedback(self):
+        frame = health(fault_flags=1)
+        self.router._observe_node_message(codec.decode(frame), frame)
+        self.assertFalse(self.router.submit_frame(ground_request()))
+
+    def test_observed_protected_result_coalesces_by_request_at_full_queue(self):
+        router = BoatRouter(self.bus, ServiceConfig(queue_limit=4), clock=self.clock,
+                            on_frame=self.output.append, on_event=self.events.append)
+        key = (SYSTEM_GROUND, COMPONENT_GROUND, 123, 1)
+        router._remember_request(key, codec.decode(ground_request())["fields"], "comms")
+        router._observe_node_message(codec.decode(status()), status())
+        router._observe_node_message(codec.decode(health()), health())
+        link = codec.encode("LINK_STATUS", {
+            "time_boot_ms": 1, "rx_packets": 0, "tx_packets": 0,
+            "rx_errors": 0, "tx_errors": 0, "address": 0,
+            "rssi_dbm": 0, "snr_cdb": 0, "link_type": 1,
+            "connected": 1}, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+        router._observe_node_message(codec.decode(link), link)
+        for state, result in ((1, 0), (4, 1)):
+            frame = codec.encode("REQUEST_RESULT", {
+                "ground_session": 123, "request_id": 1, "motor_boot_id": 55,
+                "local_command_id": 1, "result": result, "state": state,
+                "target_system": SYSTEM_GROUND, "target_component": COMPONENT_GROUND,
+            }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+            router._observe_node_message(codec.decode(frame), frame)
+        self.assertEqual(len(router._normal), 4)
+        result_entry = next(item for item in router._normal if item.key == key)
+        self.assertEqual(codec.decode(result_entry.frame)["fields"]["state"], 4)
 
     def test_mismatched_motor_result_is_not_forwarded(self):
         result = codec.encode("REQUEST_RESULT", {
@@ -240,6 +333,22 @@ class RouterTests(unittest.TestCase):
         _enqueue_stdout(out, result)
         self.assertEqual(out.qsize(), 2)
         self.assertEqual(codec.decode(out.get_nowait())["name"], "REQUEST_RESULT")
+
+    def test_bridge_stdout_overflow_reports_unknown_result_delivery(self):
+        out = queue.Queue(maxsize=1)
+        def terminal(request_id):
+            return codec.encode("REQUEST_RESULT", {
+                "ground_session": 123, "request_id": request_id, "motor_boot_id": 55,
+                "local_command_id": request_id, "result": 1, "state": 4,
+                "target_system": 255, "target_component": 190,
+            }, system=1, component=1)
+        self.assertTrue(_enqueue_stdout(out, terminal(1)))
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            accepted = _enqueue_stdout(out, terminal(2))
+        self.assertFalse(accepted)
+        self.assertIn("delivery unknown", stderr.getvalue())
+        self.assertIn("request_id=2", stderr.getvalue())
 
     def test_config_rejects_noncontract_components_and_malformed_imu_values(self):
         with self.assertRaises(ValueError):

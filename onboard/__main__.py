@@ -134,7 +134,7 @@ def _frame_priority(frame: bytes) -> int:
     return 0 if name in ("REQUEST_RESULT", "ACTUATOR_STATUS", "NODE_HEALTH", "HEARTBEAT") else 1
 
 
-def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> None:
+def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> bool:
     payload = bytes(frame)
     priority = _frame_priority(payload)
     with outgoing.mutex:
@@ -147,7 +147,7 @@ def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> None:
             else:
                 items.append(payload)
             outgoing.not_empty.notify()
-            return
+            return True
         if priority == 0:
             routine = next((index for index, item in enumerate(items)
                             if _frame_priority(item) > 0), None)
@@ -157,7 +157,7 @@ def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> None:
                               if _frame_priority(item) > 0), len(items))
                 items.insert(index, payload)
                 outgoing.not_empty.notify()
-                return
+                return True
             # Coalesce repeated persistent status snapshots and the latest state
             # for a correlated request while keeping the queue bounded.
             incoming = codec.decode(payload)
@@ -166,13 +166,25 @@ def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> None:
                 try:
                     if _stdout_identity(codec.decode(item)) == identity:
                         items[index] = payload
-                        return
+                        return True
                 except (ValueError, KeyError):
                     continue
     try:
-        print("bridge stdout queue full; response could not be queued", file=sys.stderr, flush=True)
+        try:
+            message = codec.decode(payload)
+            if message["name"] == "REQUEST_RESULT":
+                fields = message["fields"]
+                detail = ("delivery unknown: bridge stdout queue full; "
+                          f"REQUEST_RESULT session={fields['ground_session']} "
+                          f"request_id={fields['request_id']} was not queued")
+            else:
+                detail = f"bridge stdout queue full; {message['name']} frame was not queued"
+        except (ValueError, KeyError, struct.error):
+            detail = "bridge stdout queue full; undecodable frame was not queued"
+        print(detail, file=sys.stderr, flush=True)
     except OSError:
         pass
+    return False
 
 
 def _stdout_identity(message: dict) -> tuple:
