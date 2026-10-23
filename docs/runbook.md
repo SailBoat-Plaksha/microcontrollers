@@ -6,7 +6,7 @@ Commands below run from the repository root. Host checks use simulation, fakes, 
 
 - Python 3.11 or newer for the Python packages.
 - `g++` for the legacy sail motor bench tests and a C11 compiler (`cc`) for the motor host harness.
-- `cmake` and Raspberry Pi Pico SDK 2.2.0 for a Pico 2 firmware build. These are not currently available in the implementation environment; firmware has not been built or flashed here.
+- `cmake`, Ninja and a Raspberry Pi Pico SDK ARM toolchain for firmware builds. Motor firmware linked for Pico (RP2040) and Pico 2 (RP2350) with the locally bundled SDK 2.3.1 and ARM GCC 16.1.0; the earlier SDK 2.2.0 combination was not tested. No board was flashed. See `motor-mcu/README.md` for rebuild commands.
 
 ## Software-only setup and checks
 
@@ -82,7 +82,7 @@ Set the device path and baud to match the attached gateway. This sends real radi
 
 ## Firmware configuration
 
-Firmware is not compiled or flashed by the host commands above. With Pico SDK 2.2.0, CMake and the correct board toolchain installed, configure measured motor references before building:
+Firmware is not compiled or flashed by the host commands above. With the Pico SDK, CMake and the correct board toolchain installed, configure measured motor references before building:
 
 ```sh
 cmake -S Servo-Chip -B build-motor \
