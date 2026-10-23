@@ -54,6 +54,8 @@ def _load_motor():
     lib.scenario_motor_boot.restype = ctypes.c_uint32
     lib.scenario_motor_rx_errors.argtypes = [ctypes.c_void_p]
     lib.scenario_motor_rx_errors.restype = ctypes.c_uint
+    lib.scenario_motor_set_reference.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.scenario_motor_set_next_command.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     return tmp, lib
 
 

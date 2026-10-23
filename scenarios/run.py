@@ -1,4 +1,4 @@
-"""Run deterministic boat contract checks and report unimplemented integration paths."""
+"""Run deterministic boat host scenarios and preserve granular evidence."""
 
 from __future__ import annotations
 
@@ -24,6 +24,18 @@ from scenarios.integrated import (run_ambiguous_write, run_actual_motor_route,
                                   run_motor_guards, run_motor_local_deadline,
                                   run_motor_ping, run_pi_owned_imu,
                                   run_rc_yield, run_step_and_duplicate)
+from scenarios.advanced import (run_imu_stale_expiry, run_lora_authority_and_integrity_guards,
+                                run_lora_full_route, run_lora_imu_units_error,
+                                run_lora_ping_all_nodes, run_missing_comms_isolation,
+                                run_modem_fragment_malformed_recovery,
+                                run_motor_reboot_retirement,
+                                run_motor_replay_reference_busy_matrix,
+                                run_relay_queue_stop_priority,
+                                run_router_bus_fault_recovery,
+                                run_router_comms_resets,
+                                run_router_queue_fairness,
+                                run_ssh_bridge_process,
+                                run_stale_queued_motion_on_motor_boot)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "scenarios" / "results"
@@ -47,17 +59,17 @@ class Scenario:
 
 
 SCENARIO_SPECS = [
-    (1, "LoRa and SSH routing with correlated motor status", "Integrated production router-to-compiled-motor route passes. Full SSH stdio process delivery and LoRa ground gateway/comms relay are not exercised here."),
-    (2, "Pi-owned IMU sampling, units and freshness", "Pi-owned register read and mg/mrad/s serialization pass. Stale-sample/deadline and equivalent SSH plus LoRa delivery remain unverified."),
-    (3, "Ping-all responses without loops", "Actual motor responder returns one matched reply. Comms responder and all-node no-loop behavior remain unverified."),
-    (4, "Invalid target, source, authority, message and CRC", "Compiled motor rejects wrong source/target/authority, hard travel limit and damaged CRC without output. Signed and unsupported-message cases remain unverified end to end."),
-    (5, "Absolute, STEP deduplication, sessions and concurrency", "Integrated absolute move and independent feedback completion pass. STEP/reorder/rollover, concurrent clients, reference/freshness and reboot-ledger coverage remain incomplete."),
+    (1, "LoRa and SSH routing with correlated motor status", ""),
+    (2, "Pi-owned IMU sampling, units and freshness", ""),
+    (3, "Ping-all responses without loops", ""),
+    (4, "Invalid target, source, authority, message and CRC", ""),
+    (5, "Absolute, STEP deduplication, sessions and concurrency", ""),
     (6, "STOP priority and bounded motor deadlines", ""),
-    (7, "Loss, ambiguity, truncation and transport recovery", "Actual client ambiguous write becomes UNKNOWN and reconnect sends no replay. Bus read/write faults, short reads and modem loss/recovery remain incomplete."),
-    (8, "Node reboot and reconnect invalidation", "Client reconnect path is exercised. Actual Pi/motor/comms boot changes and request invalidation remain incomplete."),
-    (9, "Missing peers, stale IMU and queue overflow", "One configured IMU read and motor poll pass. Stale sensor, disappearing peer, and healthy-peer isolation under bus faults remain incomplete."),
+    (7, "Loss, ambiguity, truncation and transport recovery", ""),
+    (8, "Node reboot and reconnect invalidation", ""),
+    (9, "Missing peers, stale IMU and queue overflow", ""),
     (10, "RC takeover and autonomous ownership", ""),
-    (11, "Saturated telemetry fairness", "Full bounded-queue STOP/status/health priority and fair polling under saturation remain incomplete."),
+    (11, "Saturated telemetry fairness", ""),
 ]
 
 
@@ -305,14 +317,23 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
     by_number = {scenario.number: scenario for scenario in scenarios}
     assignments = [
         (1, "BoatClient → production router → compiled motor adapter; correlated status and measured completion", lambda: _integration(run_actual_motor_route)),
+        (1, "Full ground Gateway → C modem/relay → router → compiled motor → relay → Gateway", lambda: _integration(run_lora_full_route)),
+        (1, "SSHTransport pipes → production onboard._run_bridge → compiled motor → SSH stdout", lambda: _integration(run_ssh_bridge_process)),
         (2, "Pi-owned IMU register acquisition and encoded units", lambda: _integration(run_pi_owned_imu)),
+        (2, "IMU units, validity, read error and recovery through LoRa relay/gateway", lambda: _integration(run_lora_imu_units_error)),
+        (2, "Stale IMU sample validity expires after five seconds", lambda: _integration(run_imu_stale_expiry)),
         (3, "Actual motor ping responder", lambda: _integration(run_motor_ping)),
+        (3, "LoRa ping-all returns one reply from Pi, motor and comms", lambda: _integration(run_lora_ping_all_nodes)),
         (4, "Compiled adapter and router invalid-request guards", lambda: _integration(run_motor_guards)),
+        (4, "Signed, damaged, unsupported and unauthorized requests through LoRa", lambda: _integration(run_lora_authority_and_integrity_guards)),
         (5, "Compiled adapter STEP resolution and duplicate suppression", lambda: _integration(run_step_and_duplicate)),
+        (5, "Reference, freshness, reorder, duplicate, busy-client and ID-wrap matrix", lambda: _integration(run_motor_replay_reference_busy_matrix)),
         (6, "Router STOP priority with local timeout", lambda: _integration(run_deadline_and_stop_priority)),
         (6, "Compiled adapter local deadline distinct from STOP", lambda: _integration(run_motor_local_deadline)),
         (10, "Compiled adapter yields autonomous output to RC ownership", lambda: _integration(run_rc_yield)),
         (7, "Integrated ambiguous write becomes UNKNOWN without replay", lambda: _integration(run_ambiguous_write)),
+        (7, "Ambiguous bus write, short mailbox read and recovery without replay", lambda: _integration(run_router_bus_fault_recovery)),
+        (7, "Actual C modem fragmented/malformed input and recovery", lambda: _integration(run_modem_fragment_malformed_recovery)),
         (1, "BoatClient request encoding", _check_client_request_fields),
         (2, "Client ping and IMU decoding", _check_client_ping_and_imu),
         (3, "Client addressed ping matching", _check_client_ping_and_imu),
@@ -321,6 +342,12 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
         (7, "Codec and transport fixture faults", _check_fixture_transports),
         (7, "Ambiguous write does not replay on reconnect", _check_reconnect_and_ambiguous_write),
         (8, "Client reconnect does not replay", _check_reconnect_and_ambiguous_write),
+        (8, "Actual motor boot change retires session and invalidates pending movement", lambda: _integration(run_motor_reboot_retirement)),
+        (8, "Queued movement is retired before it reaches a new motor boot", lambda: _integration(run_stale_queued_motion_on_motor_boot)),
+        (8, "Router and comms reset boot identities and empty state", lambda: _integration(run_router_comms_resets)),
+        (9, "Missing comms peer does not block healthy motor polls", lambda: _integration(run_missing_comms_isolation)),
+        (11, "Router STOP priority and fair peer polling under saturation", lambda: _integration(run_router_queue_fairness)),
+        (11, "Comms relay retains STOP first under queue saturation", lambda: _integration(run_relay_queue_stop_priority)),
         (1, "Generated C header to Python codec", _check_generated_c_header),
     ]
     trace: list[dict] = []
@@ -330,7 +357,7 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
         if check.status == "PASS":
             by_number[number].trace.extend(emitted)
             trace.extend({"scenario": number, **event} for event in emitted)
-    fully_covered = {6, 10}
+    fully_covered = set(range(1, 12))
     for scenario in scenarios:
         scenario.status = ("FAIL" if any(check.status == "FAIL" for check in scenario.checks) else
                            "PASS" if scenario.number in fully_covered and scenario.checks else

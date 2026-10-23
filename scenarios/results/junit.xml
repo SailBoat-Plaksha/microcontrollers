@@ -1,49 +1,50 @@
-<testsuite name="boat-midsem-scenarios-1-11" tests="29" failures="0" skipped="9">
-  <testcase classname="scenario.1" name="production integration">
-    <skipped message="Integrated production router-to-compiled-motor route passes. Full SSH stdio process delivery and LoRa ground gateway/comms relay are not exercised here." />
-  </testcase>
+<testsuite name="boat-midsem-scenarios-1-11" tests="44" failures="2" skipped="0">
+  <testcase classname="scenario.1" name="production integration" />
   <testcase classname="scenario.1" name="BoatClient → production router → compiled motor adapter; correlated status and measured completion" />
+  <testcase classname="scenario.1" name="Full ground Gateway → C modem/relay → router → compiled motor → relay → Gateway" />
+  <testcase classname="scenario.1" name="SSHTransport pipes → production onboard._run_bridge → compiled motor → SSH stdout" />
   <testcase classname="scenario.1" name="BoatClient request encoding" />
   <testcase classname="scenario.1" name="Generated C header to Python codec" />
   <testcase classname="scenario.2" name="production integration">
-    <skipped message="Pi-owned register read and mg/mrad/s serialization pass. Stale-sample/deadline and equivalent SSH plus LoRa delivery remain unverified." />
+    <failure message="scenario 2 failed">AssertionError: stale sample remained valid: sampled_at=10.0, now=15.001000000000001, valid_fields=3</failure>
   </testcase>
   <testcase classname="scenario.2" name="Pi-owned IMU register acquisition and encoded units" />
+  <testcase classname="scenario.2" name="IMU units, validity, read error and recovery through LoRa relay/gateway" />
+  <testcase classname="scenario.2" name="Stale IMU sample validity expires after five seconds">
+    <failure message="Stale IMU sample validity expires after five seconds">AssertionError: stale sample remained valid: sampled_at=10.0, now=15.001000000000001, valid_fields=3</failure>
+  </testcase>
   <testcase classname="scenario.2" name="Client ping and IMU decoding" />
-  <testcase classname="scenario.3" name="production integration">
-    <skipped message="Actual motor responder returns one matched reply. Comms responder and all-node no-loop behavior remain unverified." />
-  </testcase>
+  <testcase classname="scenario.3" name="production integration" />
   <testcase classname="scenario.3" name="Actual motor ping responder" />
+  <testcase classname="scenario.3" name="LoRa ping-all returns one reply from Pi, motor and comms" />
   <testcase classname="scenario.3" name="Client addressed ping matching" />
-  <testcase classname="scenario.4" name="production integration">
-    <skipped message="Compiled motor rejects wrong source/target/authority, hard travel limit and damaged CRC without output. Signed and unsupported-message cases remain unverified end to end." />
-  </testcase>
+  <testcase classname="scenario.4" name="production integration" />
   <testcase classname="scenario.4" name="Compiled adapter and router invalid-request guards" />
+  <testcase classname="scenario.4" name="Signed, damaged, unsupported and unauthorized requests through LoRa" />
   <testcase classname="scenario.4" name="Client invalid-frame and target filtering" />
-  <testcase classname="scenario.5" name="production integration">
-    <skipped message="Integrated absolute move and independent feedback completion pass. STEP/reorder/rollover, concurrent clients, reference/freshness and reboot-ledger coverage remain incomplete." />
-  </testcase>
+  <testcase classname="scenario.5" name="production integration" />
   <testcase classname="scenario.5" name="Compiled adapter STEP resolution and duplicate suppression" />
+  <testcase classname="scenario.5" name="Reference, freshness, reorder, duplicate, busy-client and ID-wrap matrix" />
   <testcase classname="scenario.5" name="Client movement request fields" />
   <testcase classname="scenario.6" name="production integration" />
   <testcase classname="scenario.6" name="Router STOP priority with local timeout" />
   <testcase classname="scenario.6" name="Compiled adapter local deadline distinct from STOP" />
-  <testcase classname="scenario.7" name="production integration">
-    <skipped message="Actual client ambiguous write becomes UNKNOWN and reconnect sends no replay. Bus read/write faults, short reads and modem loss/recovery remain incomplete." />
-  </testcase>
+  <testcase classname="scenario.7" name="production integration" />
   <testcase classname="scenario.7" name="Integrated ambiguous write becomes UNKNOWN without replay" />
+  <testcase classname="scenario.7" name="Ambiguous bus write, short mailbox read and recovery without replay" />
+  <testcase classname="scenario.7" name="Actual C modem fragmented/malformed input and recovery" />
   <testcase classname="scenario.7" name="Codec and transport fixture faults" />
   <testcase classname="scenario.7" name="Ambiguous write does not replay on reconnect" />
-  <testcase classname="scenario.8" name="production integration">
-    <skipped message="Client reconnect path is exercised. Actual Pi/motor/comms boot changes and request invalidation remain incomplete." />
-  </testcase>
+  <testcase classname="scenario.8" name="production integration" />
   <testcase classname="scenario.8" name="Client reconnect does not replay" />
-  <testcase classname="scenario.9" name="production integration">
-    <skipped message="One configured IMU read and motor poll pass. Stale sensor, disappearing peer, and healthy-peer isolation under bus faults remain incomplete." />
-  </testcase>
+  <testcase classname="scenario.8" name="Actual motor boot change retires session and invalidates pending movement" />
+  <testcase classname="scenario.8" name="Queued movement is retired before it reaches a new motor boot" />
+  <testcase classname="scenario.8" name="Router and comms reset boot identities and empty state" />
+  <testcase classname="scenario.9" name="production integration" />
+  <testcase classname="scenario.9" name="Missing comms peer does not block healthy motor polls" />
   <testcase classname="scenario.10" name="production integration" />
   <testcase classname="scenario.10" name="Compiled adapter yields autonomous output to RC ownership" />
-  <testcase classname="scenario.11" name="production integration">
-    <skipped message="Full bounded-queue STOP/status/health priority and fair polling under saturation remain incomplete." />
-  </testcase>
+  <testcase classname="scenario.11" name="production integration" />
+  <testcase classname="scenario.11" name="Router STOP priority and fair peer polling under saturation" />
+  <testcase classname="scenario.11" name="Comms relay retains STOP first under queue saturation" />
 </testsuite>
