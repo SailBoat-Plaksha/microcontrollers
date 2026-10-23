@@ -1,0 +1,22 @@
+# RC, servo, encoder and watchdog branch review
+
+Reviewed `origin/dev-rc_control`, `dev-watchdog`, `dev` and the current `i2c+mavlink`-based branch snapshot on 2026-10-24. This is a source review only; it does not report compilation, flashing or physical operation.
+
+## Reusable code
+
+- RC capture and mapping are in `Servo-Chip/rc_control.c`: `rc_irq_handler()` measures rudder, sail and mode pulse widths; `setup_rc()` enables edge interrupts; `apply_rc_to_motor()` bounds pulses to 800–2200 µs, applies a 25 µs deadband and maps deviation to direction/PWM. `Servo-Chip/operating_loops.c::idling_loop()` yields to `rc_loop()` when mode pulse exceeds 1500 µs. `rc_loop()` continues applying both channels and returns to standby when the mode pulse falls below threshold.
+- Driver/encoder primitives are in `Servo-Chip/servo.c`: `encoder_init()` samples quadrature inputs; `encoder_poll()` counts valid transitions using `get_direction()`; `startRotate()`, `stopRotate()` and `stopRotate_noStandby()` control direction, PWM and standby. `Servo()` drives toward an angle using polled encoder counts and a timeout; it sets `ms->angle` to the requested angle even after timeout, so that field is not measured position feedback.
+- `Servo-Chip/main.c::motorSetup()` declares two motors and encoder pin pairs (M1 GP2/GP3, M2 GP4/GP5), initializes them, and `startup_tests()` runs both motors for 500 ms on each of three passes. The test is an unconditional motor movement at startup in the source.
+- `servo_json_handler()` parses an angle and calls `Servo()`, but no caller is present in `main.c`; it is not an implemented command path. `dev` has no MAVLink parser in `operating_loops.c`. The current branch adds `service_mavlink()` there: it consumes USB stdio bytes, accepts only `MAV_ACTUATOR_SETPOINT`, checks it with `actuator_check()`, reports `MAV_ACTUATOR_STATUS`, then calls blocking `Servo()`. `idling_loop()` and `rc_loop()` service that input. This is a UART/USB setpoint path, not the contract's `ACTUATOR_REQUEST` absolute/step/stop path, and it is not an I2C mailbox adapter. The status angle is derived from `motor->angle`, which `Servo()` sets to the requested target even after timeout.
+
+## Branch differences and unresolved pins
+
+- `origin/dev-rc_control` uses RC rudder/sail GP14/GP15 and mode `RC_FLAG_PIN` GP9 (`Servo-Chip/rc_control.c`); motor standby is GP21, encoder inputs GP2–GP5, and driver outputs GP10–GP12/GP18–GP20 (`Servo-Chip/main.c`).
+- `dev-watchdog` changes the RC inputs to GP18/GP19 and mode to GP21 (`Servo-Chip/rc_control.c`), while `Servo-Chip/main.c` sets motor standby to GP9 and driver outputs to GP10–GP15. Encoder GP2–GP5 are unchanged. Thus the newer pin map avoids overlap between its declared RC and motor pins, but conflicts with the prior assignments and needs board/wiring confirmation.
+- `dev` restores `Servo-Chip/main.c` motor standby GP21 and motor outputs GP10–GP12/GP18–GP20, but retains `dev-watchdog` RC pins GP18/GP19 and mode GP21. This makes RC rudder overlap motor INA1 on GP18, RC sail overlap motor INA2 on GP19, and mode overlap motor standby on GP21. The current snapshot descends from `dev` and preserves those conflicts. `servo.c` also defines its own standby pin as GP21, independent of `main.c::STANDBY_PIN`.
+- `dev-watchdog` adds a separate `Power-Board-Watchdog/` AVR rail indicator program. Its `main()` polls PB3/PB4 and mirrors those inputs to PB2/PB1; PB0 indicates both outputs low. It does not implement a Pico control-loop watchdog or motor-safe reset behavior. `Servo-Chip/CMakeLists.txt` leaves `hardware_watchdog` commented; the Servo-Chip source has no `watchdog_enable()`/`watchdog_update()` calls.
+- Encoder conversion is inconsistent: `Servo-Chip/include/servo.h` defaults `COUNTS_PER_REV` to 830, while `Servo-Chip/servo.c` defaults it to 400 and labels that value rough experimental. `motorSetup()` does not provide calibration pins (both are `-1`/`-2`). Exact encoder CPR, gearbox ratio, angle reference, driver model, servo mechanism, board variant and wiring are unknown.
+
+## Review boundary
+
+`Servo-Chip/rc_control.c`, `Servo-Chip/include/rc_control.h`, the body of `rc_loop()` and receiver mappings are protected. `Power-Board-Watchdog/`, `evidence/`, and the isolated bench fixture and protocol are also outside this review's edit scope. No source files in those areas were changed.
