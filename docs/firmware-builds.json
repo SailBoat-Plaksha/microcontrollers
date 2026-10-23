@@ -1,0 +1,44 @@
+{
+  "source_revision": "fb2c8c7c5c22d35407e1ccee0aeac9502afd00d3",
+  "sdk_version": "2.3.1",
+  "compiler_version": "ARM GCC 16.1.0",
+  "cmake_version": "3.31.6",
+  "source_root": "/home/rgcodes/Robotics/microcontrollers",
+  "motor_references_enabled": false,
+  "flashed": false,
+  "physical_exchange_tested": false,
+  "builds": [
+    {
+      "target": "motor",
+      "board": "pico",
+      "exit": 0,
+      "log": "/tmp/boat-final-motor-pico.log",
+      "uf2": "/tmp/boat-final-motor-pico/Servo-Chip.uf2",
+      "sha256": "2ca50d1c3d678525ba3bc4d988cdcaea70cbe22ba40eba881be3d23c92f5e303"
+    },
+    {
+      "target": "motor",
+      "board": "pico2",
+      "exit": 0,
+      "log": "/tmp/boat-final-motor-pico2.log",
+      "uf2": "/tmp/boat-final-motor-pico2/Servo-Chip.uf2",
+      "sha256": "d4effedbe3ab4f555392c7e71a0a55553f6ef5dcc79e85bb6b78b598e698baaa"
+    },
+    {
+      "target": "comms",
+      "board": "pico",
+      "exit": 0,
+      "log": "/tmp/boat-final-comms-pico.log",
+      "uf2": "/tmp/boat-final-comms-pico/comms_mcu.uf2",
+      "sha256": "78688db2de981be5c7eeb049867582b5c9f9894213f923662de28c0349675f15"
+    },
+    {
+      "target": "comms",
+      "board": "pico2",
+      "exit": 0,
+      "log": "/tmp/boat-final-comms-pico2.log",
+      "uf2": "/tmp/boat-final-comms-pico2/comms_mcu.uf2",
+      "sha256": "8d48da6cbe38ae3c7f80ff09f939d32ef940dd111c3004b1fb65ee0fabe203b2"
+    }
+  ]
+}
