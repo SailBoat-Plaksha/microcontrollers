@@ -2,7 +2,7 @@
 
 Status: implementation authorized on 2026-10-24. Continue from the session handoff and `docs/contract.md`.
 Base branch: `i2c+mavlink`, starting at `13b58b2`.
-Implementation: GPT-6 Luna through Codex, or models explicitly marked free through OpenCode. Earlier paid-provider preferences no longer apply. Each delecheckd task uses a separate worktree. The parent reviews, integrates and runs QA.
+Implementation: GPT-6 Luna through Codex, or models explicitly marked free through OpenCode. Earlier paid-provider preferences no longer apply. Each delegated task uses a separate worktree. The parent reviews, integrates and runs QA.
 
 ## Current requirements
 
@@ -74,15 +74,15 @@ These are planned lane/branch names. Actual worktree paths and task IDs are reco
 | `demo/protocol` | `protocol/`, generated bindings, contract docs | Protocol checks: stable XML, identity/session rules, Python/C cross-decode, encoded sizes and CRC fixtures |
 | `demo/pi-router` | new onboard Python package, Pi launcher/config, IMU driver | Single bus owner including IMU reads; address table; allowlist; priority/fair scheduler; STEP-to-angle resolution; status correlation; persistent SSH bridge; shared CLI service; simulated and real bus adapters |
 | `demo/motor` | new motor transport/autonomous adapter and explicit integration hooks | Existing servo/encoder hardware abstraction; nonblocking autonomous angle moves; no startup movement; bounded travel/runtime; duplicate protection; STOP; preserve RC override code and behavior; actual firmware host harness |
-| `demo/comms-sensor` | new Pico 1 firmware and ground-Pico checkway directories | I2C peripheral mailbox; nonblocking RYLR998 driver; bounded radio queues and health; forwarded sensor telemetry; ground USB checkway using same dialect; no IMU-controller role |
+| `demo/comms-sensor` | new Pico 1 firmware and ground-Pico gateway directories | I2C peripheral mailbox; nonblocking RYLR998 driver; bounded radio queues and health; forwarded sensor telemetry; ground USB gateway using same dialect; no IMU-controller role |
 | `demo/ground-station` | new NiceGUI package and its dependencies | USB LoRa, SSH and visibly labeled simulation adapters behind the same interface; absolute-angle/STEP/STOP controls and typed CLI; node/RTT/health cards; IMU plots; trace log; export |
 | `demo/scenarios` | new scenario suite, fixtures, validation/runbook docs | Deterministic topology/fault runner; consumes production codecs and actual firmware harnesses; independent expectations; machine-readable report and packet trace |
 
-The protocol lane merges first. Remaining lanes run in parallel from that shared commit. Test scaffolding may begin earlier, but final fixtures must use the frozen contract. Avoid cross-lane edits; integration fixes return to the owning implementation agent as a new delecheckd task carrying the original brief, prior result, review findings and unresolved issues. Each review round receives its own stable request ID and task ID.
+The protocol lane merges first. Remaining lanes run in parallel from that shared commit. Test scaffolding may begin earlier, but final fixtures must use the frozen contract. Avoid cross-lane edits; integration fixes return to the owning implementation agent as a new delegated task carrying the original brief, prior result, review findings and unresolved issues. Each review round receives its own stable request ID and task ID.
 
 Freeze the Python-facing interface with the wire contract: one `BoatClient` exposes connect/disconnect, absolute-angle, step, stop, ping-all and event subscription; serial/SSH/simulation implement the same raw-frame transport interface. GUI and CLI call this shared client, not one another and not I2C directly. One Pi process owns the real bus; its router consumes complete validated frames and emits observable events/status. Scenario tests inject clock/bus/transport interfaces. Firmware shares generated messages and mailbox constants rather than depending on Python internals. Record exact signatures and import paths in the contract commit before parallel coding.
 
-All implementation uses T3 `delecheck_task` with `isolation:"worktree"`, `mode:"async"`, explicit provider/model, and retained task IDs. No ordinary top-level conversations substitute for child tasks. No automatic code changes to unrelated production firmware, watchdog project or evidence decks.
+All implementation uses T3 `delegate_task` with `isolation:"worktree"`, `mode:"async"`, explicit provider/model, and retained task IDs. No ordinary top-level conversations substitute for child tasks. No automatic code changes to unrelated production firmware, watchdog project or evidence decks.
 
 RC boundary: no changes to `Servo-Chip/rc_control.c`, its header, the existing `rc_loop()` body, receiver mappings or override semantics. Add the MAVLink/I2C autonomous adapter around this boundary, with an exclusive motor ownership check; it must yield before entering the unchanged RC loop. Do not call the existing blocking `Servo()` from the communication service and claim prompt STOP/override. Inspect the actual call graph and preserve shared primitive behavior. If meeting a requirement would require changing protected RC code, report the precise conflict instead of making that change. Current pin definitions disagree across files (including standby/RC-related GP9/GP21 assignments); resolve the physical map explicitly without silently rewriting protected receiver code.
 
@@ -93,7 +93,7 @@ Use NiceGUI components, locally bound by default, with transport configuration a
 - Connect/disconnect to the selected transport; no automatic movement replay or silent transport fallback.
 - Absolute angle entry, +/- angular STEP buttons with configurable increment, and STOP; control limits match firmware. CLI exposes the same operations and validation. Disable new moves while busy, feedback/reference is invalid, or state is uncertain; leave STOP usable according to authority policy.
 - Show request sent, controller running, controller completed and rejected/unknown as different observations.
-- Per-node heartbeat age, RTT, boot/session, faults and errors. Never paint a sensor healthy merely because its checkway answers a ping.
+- Per-node heartbeat age, RTT, boot/session, faults and errors. Never paint a sensor healthy merely because its gateway answers a ping.
 - Acceleration/angular-rate plots with units, sample age and missing/stale state. Do not invent calibrated attitude/heading from raw IMU readings.
 - Packet path/event log with source, destination, request ID, timestamp, transport, result and rejection reason; export JSONL.
 - Reconnecting, stale data and unavailable hardware remain visible. Simulated measurements are labeled continuously.
@@ -104,7 +104,7 @@ Build a deterministic headless virtual topology with injectable clock and transp
 
 Required scenarios:
 
-1. Ground -> LoRa checkways -> Pico 1 mailbox -> Pi -> Pico 2 -> correlated return status; same test over SSH.
+1. Ground -> LoRa gateways -> Pico 1 mailbox -> Pi -> Pico 2 -> correlated return status; same test over SSH.
 2. Pi reads IMU registers on the shared bus -> telemetry -> SSH ground or Pico 1/LoRa -> ground, with correct units, source identity and freshness.
 3. Ping-all yields one matching reply per responding node; replies do not cause storms or forwarding loops.
 4. Wrong target/source/authority, unsupported message and damaged CRC cannot energize a motor.
@@ -126,7 +126,7 @@ One documented command runs software scenarios and returns a nonzero status on f
 - 0:00-0:45: contract/schema/API freeze and generated bindings.
 - 0:45-2:45: four parallel implementation lanes plus scenario work, sharing the frozen contract.
 - 2:45-3:45: integrate reviewed commits into `i2c+mavlink`, run regression/scenario suites and firmware builds. Merge one lane at a time; preserve unrelated edits.
-- 3:45-4:45: orchestrator browser QA and fault review; implementation agents fix concrete findings in fresh delecheckd rounds.
+- 3:45-4:45: orchestrator browser QA and fault review; implementation agents fix concrete findings in fresh delegated rounds.
 - 4:45-6:00: freeze, package launch/flash commands, power-on runbook, reproducible reports, screenshots and a hardware proof checklist. Physical rehearsal requires an awake operator and wired boards.
 
 If integration slips, preserve the complete SSH path before optional UI polish; LoRa remains a required deliverable with an explicit pass/pending result. Never substitute a successful SSH or simulated path for real LoRa proof.

@@ -18,7 +18,7 @@ Source of truth for messages: `protocol/arsem.xml` (schema `1.1.0`: the eight ex
 
 ## 2. Message set
 
-Supported: custom 200000–200010 plus standard `HEARTBEAT` (0), `PING` (4), `SCALED_IMU` (26). `ARSEM_MAILBOX_FRAME_BYTES` is 64, so every supported frame must encode to ≤ 64 bytes (largest current: `REQUEST_RESULT` = 32).
+Supported: custom 200000–200010 plus standard `HEARTBEAT` (0), `PING` (4), `SCALED_IMU` (26). `ARSEM_MAILBOX_FRAME_BYTES` is 64, so every supported frame must encode to ≤ 64 bytes (including `LINK_STATUS`, which may encode to 36 bytes).
 
 - **Movement**: ground issues ONLY `ACTUATOR_REQUEST` (200008). `opcode` selects ABSOLUTE (`delta_cdeg` = target), STEP (signed delta, resolved exactly once by the motor node against valid fresh feedback, then a bounded absolute target), or STOP (delta must be zero; STOP is distinct from a zero-degree target and distinct from a local timeout). Default GUI/CLI STEP is an angular jog (default ±5° = ±500 cdeg, configurable). `ACTUATOR_SETPOINT` (200001) keeps its existing bench semantics; production lanes do not send it.
 - **Motor response**: `ACTUATOR_STATUS` (200002) remains the motor snapshot. The fields production previously ignored — `timeout_ms`, `max_rate_cdeg_s` — are honored by the new motor adapter.
@@ -48,7 +48,7 @@ One shared 100 kHz bus, Pi is the sole controller. Each peer mailbox transfer is
 
 ## 4. Transports
 
-- **LoRa (REYAX RYLR998)**: binary MAVLink end-to-end; Base64 only inside the modem's ASCII `AT+SEND`/`+RCV` envelope (240-char payload → ≤168-byte unsigned payload, all our frames ≤32 bytes). Ground Pico is a USB-raw-MAVLink ↔ radio checkway in the same dialect.
+- **LoRa (REYAX RYLR998)**: binary MAVLink end-to-end; Base64 only inside the modem's ASCII `AT+SEND`/`+RCV` envelope (240-char payload → ≤168-byte unsigned payload, all supported frames fit the 64-byte mailbox). Ground Pico is a USB-raw-MAVLink ↔ radio gateway in the same dialect.
 - **SSH**: persistent key-authenticated SSH process to the Pi bridge; raw MAVLink on stdin/stdout, logs on stderr. Uses local SSH config and host-key verification; the GUI never launches an arbitrary shell command from user input.
 - **Simulation**: a visibly labeled in-process transport implementing the identical interface; simulated measurements labeled continuously.
 - No silent transport fallback; a disconnect stays visible and requires operator reconnect.
@@ -104,7 +104,7 @@ class BoatClient:
 | protocol (Protocol setup, this commit) | `protocol/`, `boat/`, `docs/contract.md` | — |
 | pi-router | `onboard/` (new Pi package, launcher, config, IMU driver, SSH bridge, CLI service, bus adapters) | everything else |
 | motor | `motor-mcu/` (adapter + host harness) and minimal hook edits in `Servo-Chip/main.c`, `operating_loops.c`, `CMakeLists.txt` | `Servo-Chip/rc_control.c`, `include/rc_control.h`, `rc_loop()` body, receiver mappings, `servo.c` behavior, watchdog project, evidence decks |
-| comms-sensor | `comms-mcu/` (Pico 1 firmware) and `ground-checkway/` (ground Pico) | everything else |
+| comms-sensor | `comms-mcu/` (Pico 1 firmware) and `ground-gateway/` (ground Pico) | everything else |
 | ground-station | `groundstation/` (NiceGUI app, serial/SSH transports, CLI) | everything else |
 | scenarios | `scenarios/` (runner, fixtures, runbook) | everything else |
 
