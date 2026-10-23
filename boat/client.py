@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import secrets
 import struct
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -117,17 +119,29 @@ class BoatClient:
     _OUTCOME_TERMINAL_STATES = frozenset((0, 4, 5, 6))
     _RESULT_UNKNOWN = 0
     _STATE_UNKNOWN = 0
+    _STATUS_IN_PROGRESS = 1
+    _DEFAULT_MOTOR_FRESHNESS_S = 2.0
     _ALLOWED_RESULT_SOURCES = frozenset(((SYSTEM_BOAT, COMPONENT_PI),
                                          (SYSTEM_BOAT, COMPONENT_MOTOR)))
 
     def __init__(self, transport: Transport, *, system: int = SYSTEM_GROUND,
                  component: int = COMPONENT_GROUND,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 motor_freshness_s: float = _DEFAULT_MOTOR_FRESHNESS_S) -> None:
         self.transport = transport
         self.system = self._uint(system, 8, "system")
         self.component = self._uint(component, 8, "component")
         self._clock = clock
+        if (isinstance(motor_freshness_s, bool) or
+                not isinstance(motor_freshness_s, (int, float)) or
+                not math.isfinite(motor_freshness_s) or motor_freshness_s <= 0):
+            raise ValueError("motor_freshness_s must be a positive number")
+        self._motor_freshness_s = float(motor_freshness_s)
+        self._state_lock = threading.RLock()
         self._session: int | None = None
+        self._connection_generation = 0
+        self._opening_generation: int | None = None
+        self._opening_frames: list[bytes] = []
         self._next_request_id = 1
         self._frame_sequence = 0
         self._next_ping_seq = 0
@@ -135,6 +149,12 @@ class BoatClient:
         self._last_seen: dict[tuple[int, int], float] = {}
         self._sensor_valid_fields: dict[tuple[int, int], int] = {}
         self._boot_ids: dict[tuple[int, int], int] = {}
+        self._health_at: dict[tuple[int, int], float] = {}
+        self._motor_health_at: float | None = None
+        self._motor_feedback_valid = False
+        self._motor_status_at: float | None = None
+        self._motor_enabled = False
+        self._motor_busy = False
         self._ping_sent: dict[int, tuple[int, float]] = {}
         self._seen_pongs: dict[tuple[int, int, int, int], float] = {}
         self._pending_tickets: dict[tuple[int, int], RequestTicket] = {}
@@ -151,34 +171,57 @@ class BoatClient:
         return self._session
 
     def connect(self) -> None:
-        if self._session is not None:
-            self.disconnect()
-        self._clear_connection_state(emit_unknown=True)
-        new_session = secrets.randbits(32) or 1
-        try:
-            self.transport.open(self._receive)
-        except Exception as exc:
-            # A partially opened transport must not leave a usable session behind.
-            self._safe_close()
-            self._publish(TransportEvent("error", f"open failed: {exc}"))
-            raise
-        self._session = new_session
-        self._next_request_id = 1
-        self._next_ping_seq = 0
-        self._publish(TransportEvent("connected", self.transport.name))
-        self._publish(TransportEvent("reconciliation_required",
-                                     "awaiting motor NODE_HEALTH and ACTUATOR_STATUS"))
+        with self._state_lock:
+            if self._session is not None:
+                self.disconnect()
+            self._clear_connection_state(emit_unknown=True)
+            new_session = secrets.randbits(32) or 1
+            self._connection_generation += 1
+            generation = self._connection_generation
+            self._opening_generation = generation
+            self._opening_frames = []
+            try:
+                self.transport.open(lambda frame: self._transport_frame(generation, frame))
+            except Exception as exc:
+                # An open-time callback is not accepted unless open commits successfully.
+                self._connection_generation += 1
+                self._opening_generation = None
+                self._opening_frames = []
+                self._safe_close()
+                self._publish(TransportEvent("error", f"open failed: {exc}"))
+                raise
+            queued_frames = self._opening_frames
+            self._opening_frames = []
+            self._opening_generation = None
+            self._session = new_session
+            self._next_request_id = 1
+            self._next_ping_seq = 0
+            self._publish(TransportEvent("connected", self.transport.name))
+            if self._session != new_session:
+                return
+            self._publish(TransportEvent("reconciliation_required",
+                                         "awaiting motor NODE_HEALTH and ACTUATOR_STATUS"))
+            for frame in queued_frames:
+                self._receive(frame, generation)
 
     def disconnect(self) -> None:
-        if self._session is None:
-            return
-        session = self._session
-        self._session = None
-        self._clear_connection_state(emit_unknown=True, session=session)
-        close_error = self._safe_close()
-        if close_error is not None:
-            self._publish(TransportEvent("error", f"close failed: {close_error}"))
-        self._publish(TransportEvent("disconnected", self.transport.name))
+        with self._state_lock:
+            if self._session is None:
+                return
+            session = self._session
+            self._session = None
+            self._connection_generation += 1
+            self._opening_generation = None
+            self._opening_frames = []
+            tickets = tuple(self._pending_tickets.values())
+            self._clear_connection_state(emit_unknown=False, session=session)
+            close_error = self._safe_close()
+            for ticket in tickets:
+                if ticket.ground_session == session:
+                    self._publish_unknown(ticket)
+            if close_error is not None:
+                self._publish(TransportEvent("error", f"close failed: {close_error}"))
+            self._publish(TransportEvent("disconnected", self.transport.name))
 
     def set_absolute_angle(self, actuator: int, position_cdeg: int, *,
                            timeout_ms: int = 0, max_rate_cdeg_s: int = 0) -> RequestTicket:
@@ -192,6 +235,10 @@ class BoatClient:
         return self._movement(actuator, 3, 0, 0, 0)
 
     def ping_all(self) -> None:
+        with self._state_lock:
+            self._ping_all()
+
+    def _ping_all(self) -> None:
         self._require_connected()
         now = self._clock()
         self._prune(now)
@@ -209,18 +256,28 @@ class BoatClient:
     def subscribe(self, callback: Callable[[object], None]) -> Callable[[], None]:
         if not callable(callback):
             raise TypeError("callback must be callable")
-        self._subscribers.append(callback)
+        with self._state_lock:
+            self._subscribers.append(callback)
 
         def unsubscribe() -> None:
-            if callback in self._subscribers:
-                self._subscribers.remove(callback)
+            with self._state_lock:
+                if callback in self._subscribers:
+                    self._subscribers.remove(callback)
         return unsubscribe
 
     def _movement(self, actuator: int, opcode: int, delta: int,
                   timeout_ms: int, max_rate_cdeg_s: int) -> RequestTicket:
+        with self._state_lock:
+            return self._movement_locked(actuator, opcode, delta, timeout_ms,
+                                         max_rate_cdeg_s)
+
+    def _movement_locked(self, actuator: int, opcode: int, delta: int,
+                         timeout_ms: int, max_rate_cdeg_s: int) -> RequestTicket:
         self._require_connected()
-        if opcode != 3 and not (self._reconcile_health and self._reconcile_status):
-            raise RuntimeError("fresh motor health and status are required before movement")
+        now = self._clock()
+        self._prune(now)
+        if opcode != 3:
+            self._require_motor_ready(now)
         actuator = self._uint(actuator, 8, "actuator")
         if actuator not in self._VALID_ACTUATORS:
             raise ValueError("actuator must be sail (1) or rudder (2)")
@@ -229,8 +286,6 @@ class BoatClient:
         self._uint(max_rate_cdeg_s, 16, "max_rate_cdeg_s")
         if opcode == 3 and delta != 0:
             raise ValueError("STOP requires a zero delta")
-        now = self._clock()
-        self._prune(now)
         if len(self._pending_tickets) >= self._MAX_PENDING:
             raise RuntimeError("too many unresolved movement requests")
         if self._next_request_id > 0xFFFFFFFF:
@@ -251,6 +306,21 @@ class BoatClient:
         self._pending_at[key] = now
         self._send("ACTUATOR_REQUEST", fields, affected=(ticket,))
         return ticket
+
+    def _require_motor_ready(self, now: float) -> None:
+        health_fresh = (self._motor_health_at is not None and
+                        now - self._motor_health_at <= self._motor_freshness_s)
+        status_fresh = (self._motor_status_at is not None and
+                        now - self._motor_status_at <= self._motor_freshness_s)
+        if not (self._reconcile_health and self._reconcile_status and
+                health_fresh and status_fresh):
+            raise RuntimeError("fresh motor health and status are required before movement")
+        if not self._motor_feedback_valid:
+            raise RuntimeError("fresh valid motor feedback is required before movement")
+        if not self._motor_enabled:
+            raise RuntimeError("motor output is disabled")
+        if self._motor_busy:
+            raise RuntimeError("motor is busy")
 
     def _require_connected(self) -> None:
         if self._session is None:
@@ -286,20 +356,39 @@ class BoatClient:
         self._frame_sequence = (self._frame_sequence + 1) & 0xFF
         self._publish(RawFrameEvent(frame, self.transport.name, "out"))
 
-    def _receive(self, frame: bytes) -> None:
+    def _transport_frame(self, generation: int, frame: bytes) -> None:
+        with self._state_lock:
+            if generation != self._connection_generation:
+                return
+            if self._session is None:
+                if self._opening_generation == generation:
+                    self._opening_frames.append(bytes(frame))
+                return
+            self._receive(frame, generation)
+
+    def _receive(self, frame: bytes, generation: int | None = None) -> None:
+        with self._state_lock:
+            self._receive_locked(frame, generation)
+
+    def _receive_locked(self, frame: bytes, generation: int | None) -> None:
         # Ignore callbacks retained by a transport after disconnect/open failure.
-        if self._session is None:
+        if (self._session is None or
+                (generation is not None and generation != self._connection_generation)):
             return
         raw = bytes(frame)
         self._publish(RawFrameEvent(raw, self.transport.name, "in"))
         try:
             message = codec.decode(raw)
-        except (ValueError, KeyError, struct.error, TypeError):
+        except (ValueError, KeyError, struct.error, TypeError) as exc:
+            self._publish(TransportEvent("protocol_error", f"invalid frame: {exc}"))
             return
         now = self._clock()
         self._prune(now)
+        if self._session is None:
+            return
         source = (message["system"], message["component"])
         self._last_seen[source] = now
+        self._trim(self._last_seen, self._MAX_SEEN)
         name, fields = message["name"], message["fields"]
         if name == "HEARTBEAT":
             self._publish(Heartbeat(*source, 0.0))
@@ -314,11 +403,15 @@ class BoatClient:
             if pong_key in self._seen_pongs:
                 return
             self._seen_pongs[pong_key] = now
+            self._trim(self._seen_pongs, self._MAX_SEEN)
             self._publish(PongReply(*source, fields["seq"], fields["time_usec"],
                                     max(0.0, (now - tracked[1]) * 1000.0)))
         elif name == "ACTUATOR_STATUS":
             if source == (SYSTEM_BOAT, COMPONENT_MOTOR):
                 self._reconcile_status = True
+                self._motor_status_at = now
+                self._motor_enabled = bool(fields["enabled"])
+                self._motor_busy = fields["result"] == self._STATUS_IN_PROGRESS
                 self._publish_reconciled_if_ready()
             self._publish(MotorReport(*(fields[key] for key in (
                 "time_boot_ms", "command_id", "requested_position_cdeg",
@@ -342,6 +435,7 @@ class BoatClient:
                 fields["target_system"] != self.system or
                 fields["target_component"] != self.component):
             return
+        ticket = self._pending_tickets[ticket_key]
         motor_boot_id = fields["motor_boot_id"]
         known_motor_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR))
         changed_boot = known_motor_boot is not None and motor_boot_id != known_motor_boot
@@ -361,11 +455,14 @@ class BoatClient:
                values["target_system"] << 8 | values["target_component"])
         if key not in self._seen_outcomes:
             self._seen_outcomes[key] = now
+            self._trim(self._seen_outcomes, self._MAX_SEEN)
             self._publish(RequestOutcome(*(values[field] for field in (
                 "ground_session", "request_id", "motor_boot_id", "local_command_id",
                 "result", "state", "target_system", "target_component")), source))
         if values["state"] in self._OUTCOME_TERMINAL_STATES:
-            self._discard_ticket(self._pending_tickets[ticket_key])
+            # A subscriber may disconnect during event delivery, clearing this ticket.
+            if self._pending_tickets.get(ticket_key) == ticket:
+                self._discard_ticket(ticket)
 
     def _handle_health(self, fields: dict[str, int], source: tuple[int, int], now: float) -> None:
         boot_id = fields["boot_id"]
@@ -379,10 +476,21 @@ class BoatClient:
                 self._publish(TransportEvent("reconciliation_required",
                                              f"boot changed for {source[0]}/{source[1]}"))
             self._invalidate_node_requests(source, old_boot, now)
+            if self._session is None:
+                return
         self._boot_ids[source] = boot_id
+        self._trim_preserving(self._boot_ids, self._MAX_SEEN,
+                              {(SYSTEM_BOAT, COMPONENT_PI),
+                               (SYSTEM_BOAT, COMPONENT_MOTOR)})
         self._sensor_valid_fields[source] = fields["sensor_valid_fields"]
+        self._trim_preserving(self._sensor_valid_fields, self._MAX_SEEN,
+                              {(SYSTEM_BOAT, COMPONENT_MOTOR)})
+        self._health_at[source] = now
+        self._trim_health_tracker()
         if source == (SYSTEM_BOAT, COMPONENT_MOTOR):
             self._reconcile_health = True
+            self._motor_health_at = now
+            self._motor_feedback_valid = bool(fields["feedback_valid"])
             self._publish_reconciled_if_ready()
         self._publish(NodeHealthReport(*(fields[key] for key in (
             "boot_id", "time_boot_ms", "fault_flags", "sensor_valid_fields",
@@ -421,6 +529,12 @@ class BoatClient:
         self._last_seen.clear()
         self._sensor_valid_fields.clear()
         self._boot_ids.clear()
+        self._health_at.clear()
+        self._motor_health_at = None
+        self._motor_feedback_valid = False
+        self._motor_status_at = None
+        self._motor_enabled = False
+        self._motor_busy = False
         self._reconcile_health = False
         self._reconcile_status = False
         self._reconciled = False
@@ -469,15 +583,39 @@ class BoatClient:
         for source, seen_at in tuple(self._last_seen.items()):
             if seen_at < cutoff:
                 self._last_seen.pop(source, None)
+        for source, health_at in tuple(self._health_at.items()):
+            if now - health_at > self._motor_freshness_s:
+                self._health_at.pop(source, None)
+                self._sensor_valid_fields.pop(source, None)
+                if source == (SYSTEM_BOAT, COMPONENT_MOTOR):
+                    self._motor_health_at = None
+                    self._motor_feedback_valid = False
+                    self._reconcile_health = False
+                    self._reconciled = False
+        if (self._motor_status_at is not None and
+                now - self._motor_status_at > self._motor_freshness_s):
+            self._motor_status_at = None
+            self._motor_enabled = False
+            self._motor_busy = False
+            self._reconcile_status = False
+            self._reconciled = False
         self._trim(self._last_seen, self._MAX_SEEN)
-        self._trim(self._sensor_valid_fields, self._MAX_SEEN)
-        # Keep the two safety-relevant boot identities while bounding incidental peers.
-        self._trim(self._sensor_valid_fields, self._MAX_SEEN)
-        self._trim(self._boot_ids, self._MAX_SEEN)
         for key, ticket in tuple(self._pending_tickets.items()):
             if self._pending_at.get(key, now) < cutoff:
                 self._publish_unknown(ticket)
                 self._discard_ticket(ticket)
+                # An ambiguous expired movement must be reconciled with a newer snapshot.
+                self._motor_status_at = None
+                self._motor_enabled = False
+                self._motor_busy = False
+                self._reconcile_status = False
+                self._reconciled = False
+        # Keep the Pi and motor boot identities while bounding incidental peers.
+        self._trim_preserving(self._boot_ids, self._MAX_SEEN,
+                              {(SYSTEM_BOAT, COMPONENT_PI),
+                               (SYSTEM_BOAT, COMPONENT_MOTOR)})
+        self._trim_preserving(self._sensor_valid_fields, self._MAX_SEEN,
+                              {(SYSTEM_BOAT, COMPONENT_MOTOR)})
         self._trim(self._seen_pongs, self._MAX_SEEN)
         self._trim(self._seen_outcomes, self._MAX_SEEN)
 
@@ -485,6 +623,23 @@ class BoatClient:
     def _trim(mapping: dict, limit: int) -> None:
         while len(mapping) > limit:
             del mapping[next(iter(mapping))]
+
+    @staticmethod
+    def _trim_preserving(mapping: dict, limit: int, preserved: set) -> None:
+        while len(mapping) > limit:
+            oldest = next((key for key in mapping if key not in preserved), None)
+            if oldest is None:
+                break
+            del mapping[oldest]
+
+    def _trim_health_tracker(self) -> None:
+        preserved = {(SYSTEM_BOAT, COMPONENT_PI), (SYSTEM_BOAT, COMPONENT_MOTOR)}
+        while len(self._health_at) > self._MAX_SEEN:
+            oldest = next((key for key in self._health_at if key not in preserved), None)
+            if oldest is None:
+                break
+            del self._health_at[oldest]
+            self._sensor_valid_fields.pop(oldest, None)
 
     def _publish(self, event: object) -> None:
         for callback in tuple(self._subscribers):
