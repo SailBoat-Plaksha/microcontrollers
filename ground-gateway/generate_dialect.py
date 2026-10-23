@@ -57,7 +57,7 @@ for message_id, value in crc.items():
 lines += [
     "}", "MSG_HEARTBEAT = 0", "MSG_PING = 4", "MSG_SCALED_IMU = 26",
     "MSG_ACTUATOR_REQUEST = 200008", "MSG_NODE_HEALTH = 200009",
-    "MSG_REQUEST_RESULT = 200010", "",
+    "MSG_REQUEST_RESULT = 200010", "MSG_LINK_STATUS = 200006", "",
     "# MAVLink frame offset for opcode, from the generated 19-byte message layout.",
     "ACTUATOR_REQUEST_OPCODE_FRAME_OFFSET = %d" % opcode_frame_offset, "",
 ]

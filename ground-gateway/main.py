@@ -2,6 +2,7 @@
 
 import sys
 import uselect
+import utime
 from machine import UART, Pin
 
 import config
@@ -26,12 +27,12 @@ def run():
                 data = usb_in.read(1)
                 if data:
                     gateway.feed_usb(data)
-        while uart.any():
-            data = uart.read(min(uart.any(), 128))
-            if not data:
-                break
-            gateway.feed_modem(data)
-        gateway.tick()
+        available = uart.any()
+        if available:
+            data = uart.read(min(available, 128))
+            if data:
+                gateway.feed_modem(data, utime.ticks_ms())
+        gateway.tick(utime.ticks_ms())
 
 
 run()

@@ -13,7 +13,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
-add_executable(comms_mcu main.c relay.c modem.c)
+add_executable(comms_mcu main.c mailbox_transport.c relay.c modem.c newlib_locks.c)
 target_include_directories(comms_mcu PRIVATE
     include
     ../protocol
