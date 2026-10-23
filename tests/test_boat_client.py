@@ -1,8 +1,10 @@
+import threading
 import unittest
 from unittest.mock import patch
 
-from boat.client import (BoatClient, Heartbeat, ImuSample, MotorReport, PongReply,
-                         RequestOutcome, TransportEvent)
+from boat.client import (BoatClient, Heartbeat, ImuSample, MotorReport,
+                         NodeHealthReport, PongReply, RequestOutcome,
+                         TransportEvent)
 from protocol import codec
 
 
@@ -14,13 +16,20 @@ class FakeTransport:
         self.callback = None
         self.opened = False
         self.open_error = None
+        self.open_error_after_frames = False
+        self.open_frames = []
         self.send_error = None
+        self.on_send = None
 
     def open(self, on_frame):
-        if self.open_error:
+        if self.open_error and not self.open_error_after_frames:
             raise self.open_error
         self.callback = on_frame
         self.opened = True
+        for frame in self.open_frames:
+            on_frame(frame)
+        if self.open_error:
+            raise self.open_error
 
     def close(self):
         self.opened = False
@@ -29,6 +38,8 @@ class FakeTransport:
         if self.send_error:
             raise self.send_error
         self.frames.append(frame)
+        if self.on_send:
+            self.on_send(frame)
 
     def receive(self, name, fields, *, system=1, component=154):
         self.callback(codec.encode(name, fields, system=system, component=component))
@@ -89,6 +100,11 @@ class BoatClientTests(unittest.TestCase):
         self.transport.receive("NODE_HEALTH", dict(boot_id=99, time_boot_ms=10,
             fault_flags=0, sensor_valid_fields=0, queue_drops=0, reset_reason=0,
             feedback_valid=1), system=1, component=154)
+        with self.assertRaisesRegex(RuntimeError, "motor is busy"):
+            self.client.step(1, 100)
+        self.transport.receive("ACTUATOR_STATUS", dict(time_boot_ms=11, command_id=4,
+            requested_position_cdeg=100, measured_position_cdeg=95, velocity_cdeg_s=0,
+            fault_flags=0, actuator=1, control_source=0, result=0, enabled=1))
         self.client.step(1, 100)
         result = dict(ground_session=self.client.ground_session, request_id=1,
             motor_boot_id=99, local_command_id=4, result=0, state=2,
@@ -100,7 +116,7 @@ class BoatClientTests(unittest.TestCase):
         result = {**result, "state": 3}
         self.transport.receive("REQUEST_RESULT", result, system=1, component=1)
         self.assertEqual(len([e for e in self.events if isinstance(e, Heartbeat)]), 1)
-        self.assertEqual(len([e for e in self.events if isinstance(e, MotorReport)]), 1)
+        self.assertEqual(len([e for e in self.events if isinstance(e, MotorReport)]), 2)
         outcomes = [e for e in self.events if isinstance(e, RequestOutcome)]
         self.assertEqual([e.state for e in outcomes], [2, 3])
         self.assertTrue(any(isinstance(e, TransportEvent) and e.state == "connected" for e in self.events))
@@ -142,6 +158,188 @@ class BoatClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "disconnected"):
             _ = self.client.ground_session
         self.assertTrue(any(isinstance(event, TransportEvent) and event.state == "error"
+                            for event in self.events))
+
+    def test_synchronous_open_frames_are_processed_only_after_open_succeeds(self):
+        self.client.disconnect()
+        self.transport.open_frames = [
+            codec.encode("NODE_HEALTH", dict(boot_id=7, time_boot_ms=1,
+                fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+                reset_reason=0, feedback_valid=1), system=1, component=154),
+            codec.encode("ACTUATOR_STATUS", dict(time_boot_ms=1, command_id=0,
+                requested_position_cdeg=0, measured_position_cdeg=0,
+                velocity_cdeg_s=0, fault_flags=0, actuator=1,
+                control_source=0, result=0, enabled=1), system=1, component=154),
+        ]
+        self.client.connect()
+        self.assertEqual(len([event for event in self.events
+                              if isinstance(event, MotorReport)]), 1)
+        self.assertEqual(len([event for event in self.events
+                              if isinstance(event, NodeHealthReport)]), 1)
+        self.assertEqual(self.client.step(1, 10).request_id, 1)
+
+        self.client.disconnect()
+        reports_before_failed_open = len([event for event in self.events
+                                          if isinstance(event, NodeHealthReport)])
+        self.transport.open_error = OSError("late open failure")
+        self.transport.open_error_after_frames = True
+        with self.assertRaisesRegex(OSError, "late open failure"):
+            self.client.connect()
+        self.assertEqual(len([event for event in self.events
+                              if isinstance(event, NodeHealthReport)]),
+                         reports_before_failed_open)
+        with self.assertRaisesRegex(RuntimeError, "disconnected"):
+            _ = self.client.ground_session
+
+    def test_old_transport_callback_is_ignored_after_reconnect(self):
+        old_callback = self.transport.callback
+        self.client.disconnect()
+        self.client.connect()
+        old_callback(codec.encode("NODE_HEALTH", dict(boot_id=88, time_boot_ms=1,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=1), system=1, component=154))
+        old_callback(codec.encode("ACTUATOR_STATUS", dict(time_boot_ms=1,
+            command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
+            velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
+            result=0, enabled=1), system=1, component=154))
+        self.assertNotIn((1, 154), self.client._boot_ids)
+        with self.assertRaisesRegex(RuntimeError, "fresh motor health and status"):
+            self.client.step(1, 10)
+
+    def test_motor_readiness_expires_and_checks_feedback_enabled_and_busy(self):
+        self.transport.reconcile_motor(self.client)
+        self.transport.receive("NODE_HEALTH", dict(boot_id=7, time_boot_ms=2,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=0), system=1, component=154)
+        with self.assertRaisesRegex(RuntimeError, "valid motor feedback"):
+            self.client.step(1, 10)
+        self.transport.receive("NODE_HEALTH", dict(boot_id=7, time_boot_ms=3,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=1), system=1, component=154)
+        self.transport.receive("ACTUATOR_STATUS", dict(time_boot_ms=3,
+            command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
+            velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
+            result=0, enabled=0), system=1, component=154)
+        with self.assertRaisesRegex(RuntimeError, "output is disabled"):
+            self.client.step(1, 10)
+        self.transport.receive("ACTUATOR_STATUS", dict(time_boot_ms=4,
+            command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
+            velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
+            result=0, enabled=1), system=1, component=154)
+        self.assertEqual(self.client.step(1, 10).request_id, 1)
+        self.now += self.client._motor_freshness_s + 0.01
+        with self.assertRaisesRegex(RuntimeError, "fresh motor health and status"):
+            self.client.step(1, 10)
+        self.assertGreaterEqual(self.client.stop(1).request_id, 2)
+
+    def test_expired_unknown_motion_requires_new_status(self):
+        self.transport.reconcile_motor(self.client)
+        self.client.step(1, 10)
+        self.now += self.client._TRACK_TTL + 1
+        self.client.ping_all()  # prunes the expired ticket and invalidates status readiness
+        self.assertTrue(any(isinstance(event, RequestOutcome) and event.state == 0
+                            for event in self.events))
+        self.transport.receive("NODE_HEALTH", dict(boot_id=7, time_boot_ms=2,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=1), system=1, component=154)
+        with self.assertRaisesRegex(RuntimeError, "fresh motor health and status"):
+            self.client.step(1, 10)
+        self.transport.receive("ACTUATOR_STATUS", dict(time_boot_ms=2,
+            command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
+            velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
+            result=0, enabled=1), system=1, component=154)
+        self.assertEqual(self.client.step(1, 10).request_id, 2)
+
+    def test_result_subscriber_can_disconnect_during_dispatch(self):
+        self.transport.reconcile_motor(self.client)
+        ticket = self.client.step(1, 10)
+        self.client.subscribe(lambda event: self.client.disconnect()
+                              if isinstance(event, RequestOutcome) else None)
+        self.transport.receive("REQUEST_RESULT", dict(
+            ground_session=ticket.ground_session, request_id=ticket.request_id,
+            motor_boot_id=7, local_command_id=1, result=1, state=4,
+            target_system=255, target_component=190), system=1, component=1)
+        self.assertIsNone(self.client._session)
+        self.assertEqual(self.client._pending_tickets, {})
+
+    def test_synchronous_result_during_send_uses_reserved_correlation(self):
+        self.transport.reconcile_motor(self.client)
+
+        def reply_during_send(frame):
+            message = codec.decode(frame)
+            if message["name"] != "ACTUATOR_REQUEST":
+                return
+            fields = message["fields"]
+            self.transport.receive("REQUEST_RESULT", dict(
+                ground_session=fields["ground_session"],
+                request_id=fields["request_id"], motor_boot_id=7,
+                local_command_id=3, result=1, state=4,
+                target_system=255, target_component=190), system=1, component=1)
+
+        self.transport.on_send = reply_during_send
+        ticket = self.client.step(1, 10)
+        self.assertEqual(ticket.request_id, 1)
+        self.assertNotIn((ticket.ground_session, ticket.request_id),
+                         self.client._pending_tickets)
+        outcomes = [event for event in self.events if isinstance(event, RequestOutcome)]
+        self.assertEqual([(event.request_id, event.state) for event in outcomes], [(1, 4)])
+
+    def test_incidental_health_sources_do_not_evict_safety_boot_ids(self):
+        self.transport.receive("NODE_HEALTH", dict(boot_id=11, time_boot_ms=1,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=0), system=1, component=1)
+        self.transport.receive("NODE_HEALTH", dict(boot_id=22, time_boot_ms=1,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0,
+            reset_reason=0, feedback_valid=1), system=1, component=154)
+        for index in range(self.client._MAX_SEEN + 20):
+            system, component = divmod(index, 256)
+            system += 2
+            self.transport.receive("NODE_HEALTH", dict(boot_id=index + 100,
+                time_boot_ms=1, fault_flags=0, sensor_valid_fields=0,
+                queue_drops=0, reset_reason=0, feedback_valid=0),
+                system=system, component=component)
+        self.assertEqual(self.client._boot_ids[(1, 1)], 11)
+        self.assertEqual(self.client._boot_ids[(1, 154)], 22)
+        self.assertLessEqual(len(self.client._boot_ids), self.client._MAX_SEEN)
+        self.assertLessEqual(len(self.client._health_at), self.client._MAX_SEEN)
+
+    def test_malformed_protocol_frame_emits_error_event(self):
+        self.transport.callback(b"not a MAVLink frame")
+        self.assertTrue(any(isinstance(event, TransportEvent) and
+                            event.state == "protocol_error" for event in self.events))
+
+    def test_reader_thread_can_close_transport_during_callback(self):
+        self.transport.reconcile_motor(self.client)
+        self.client.step(1, 10)
+        closed_on = []
+        original_close = self.transport.close
+
+        def close():
+            closed_on.append(threading.current_thread().name)
+            original_close()
+
+        self.transport.close = close
+        subscriber = self.client.subscribe(lambda event: self.client.disconnect()
+            if isinstance(event, Heartbeat) else None)
+        failures = []
+
+        def deliver():
+            try:
+                self.transport.receive("HEARTBEAT", dict(type=0, autopilot=0,
+                    base_mode=0, custom_mode=0, system_status=4, mavlink_version=3))
+            except Exception as exc:  # expose reader-thread failures to the test
+                failures.append(exc)
+
+        reader = threading.Thread(target=deliver, name="fake-reader")
+        reader.start()
+        reader.join(timeout=2)
+        subscriber()
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(closed_on, ["fake-reader"])
+        self.assertIsNone(self.client._session)
+        self.assertEqual(self.client._pending_tickets, {})
+        self.assertTrue(any(isinstance(event, RequestOutcome) and event.state == 0
                             for event in self.events))
 
     def test_send_failure_emits_unknown_and_marks_transport_disconnected(self):
