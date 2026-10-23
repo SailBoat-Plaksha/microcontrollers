@@ -1,0 +1,33 @@
+"""Constants derived from generated C headers and protocol/mailbox.h."""
+SYSTEM_BOAT = 1
+COMPONENT_PI = 1
+COMPONENT_MOTOR = 154
+COMPONENT_COMMS_SENSOR = 158
+SYSTEM_GROUND = 255
+COMPONENT_GROUND = 190
+MAILBOX_BYTES = 64
+CRC_EXTRA = {
+    0: 50,
+    4: 237,
+    26: 170,
+    200000: 139,
+    200001: 49,
+    200002: 131,
+    200003: 143,
+    200004: 158,
+    200005: 201,
+    200006: 198,
+    200007: 121,
+    200008: 188,
+    200009: 90,
+    200010: 56,
+}
+MSG_HEARTBEAT = 0
+MSG_PING = 4
+MSG_SCALED_IMU = 26
+MSG_ACTUATOR_REQUEST = 200008
+MSG_NODE_HEALTH = 200009
+MSG_REQUEST_RESULT = 200010
+
+# MAVLink frame offset for opcode, from the generated 19-byte message layout.
+ACTUATOR_REQUEST_OPCODE_FRAME_OFFSET = 27
