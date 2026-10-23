@@ -1,0 +1,2 @@
+# Install on the Raspberry Pi for real I2C mode. Host simulation/tests use stdlib only.
+smbus2>=0.4.3

@@ -1,0 +1,27 @@
+[bus]
+number = 1
+hz = 100000
+
+[peers]
+motor_address = 8
+comms_address = 9
+motor_component = 154
+comms_component = 158
+
+[scheduler]
+poll_interval_ms = 20
+queue_limit = 128
+
+# Generic six-axis register layout example. Supply the actual IMU address,
+# starting register and scale factors from its datasheet before live use.
+# Values below are illustrative and are not a selected hardware driver.
+[imu]
+enabled = false
+address = 104
+register = 59
+sample_size = 12
+byte_order = "little"
+signed = true
+accel_scale_mg_per_count = 1.0
+gyro_scale_mrad_s_per_count = 1.0
+interval_ms = 100
