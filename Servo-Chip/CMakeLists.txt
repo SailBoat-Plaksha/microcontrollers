@@ -25,9 +25,6 @@ endif()
 # ====================================================================================
 set(PICO_BOARD pico2 CACHE STRING "Board type")
 
-set(PICO_PLATFORM rp2350)
-set(PICO_BOARD pico2_w)  
-
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
