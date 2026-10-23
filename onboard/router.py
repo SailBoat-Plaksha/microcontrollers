@@ -20,6 +20,7 @@ ALLOWED_MESSAGES = {
     "CONTROL_AUTHORITY", "LINK_STATUS", "ACTUATOR_REQUEST", "NODE_HEALTH",
     "REQUEST_RESULT", "ENVIRONMENTAL_SAMPLE", "POWER_STATE",
 }
+IMU_SAMPLE_MAX_AGE_SECONDS = 5.0
 TERMINAL_STATES = {4, 5, 6}
 
 
@@ -134,6 +135,13 @@ class BoatRouter:
     def step(self) -> bool:
         """Perform at most one bus operation; safe to drive with an injected clock."""
         now = self.clock()
+        # Expiry is a local state transition, not a bus failure. Keep the last
+        # observation and its timestamp for diagnostics while withdrawing its
+        # validity before any periodic health response can be emitted.
+        if (self.imu_valid_fields and self.imu_last_seen is not None and
+                now - self.imu_last_seen > IMU_SAMPLE_MAX_AGE_SECONDS):
+            self.imu_valid_fields = 0
+            self._emit_health(force=True)
         for address in (self.config.motor_address, self.config.comms_address):
             identity = self._node_for_address(address)
             seen = self.node_last_seen.get(identity)
@@ -642,6 +650,7 @@ class BoatRouter:
         cfg = self.config.imu
         assert cfg is not None
         self._last_imu_poll = self.clock()
+        was_valid = self.imu_valid_fields == 3 and self.imu_error is None
         try:
             raw = self.bus.read_registers(cfg.address, cfg.register, cfg.sample_size)
             if len(raw) != cfg.sample_size:
@@ -665,7 +674,9 @@ class BoatRouter:
             self.on_frame(frame)
             self._queue(frame, self.config.comms_address, 1)
             self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False) else "IMU register sample", frame, (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
-            self._emit_health()
+            # A successful read after expiry or a read fault must restore the
+            # advertised health immediately, even if health was emitted moments ago.
+            self._emit_health(force=not was_valid)
             return True
         except (OSError, ValueError, TypeError, OverflowError, struct.error) as exc:
             self.bus_errors += 1

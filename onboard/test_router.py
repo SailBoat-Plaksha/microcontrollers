@@ -120,6 +120,54 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(sample["name"], "SCALED_IMU")
         self.assertEqual(sample["fields"]["zacc"], 1000)
 
+    def test_imu_validity_expires_and_recovery_is_reported_immediately(self):
+        cfg = ServiceConfig(imu=IMURegisterConfig(
+            address=0x68, register=0x3B, accel_scale_mg_per_count=1,
+            gyro_scale_mrad_s_per_count=1))
+        sample_bytes = struct.pack("<6h", 1, 2, 3, 4, 5, 6)
+        bus = SimulatedBus(imu_samples={0x68: sample_bytes})
+        output = []
+        r = BoatRouter(bus, cfg, clock=self.clock, on_frame=output.append)
+
+        self.assertTrue(r._poll_imu())
+        sample_at = r.imu_last_seen
+        self.assertEqual(r.imu_valid_fields, 3)
+        self.clock.advance(5.001)
+
+        # Expiry queues a health update for the normal scheduler to transmit;
+        # it does not read the sensor. The following scheduler tick still
+        # services peers while the IMU sample remains invalid.
+        peer_polls = []
+        poll_node = r._poll_node
+        def capture_peer(address):
+            self.assertEqual(r.imu_valid_fields, 0)
+            peer_polls.append(address)
+            return poll_node(address)
+        r._poll_node = capture_peer
+        operations_before = len(bus.operations)
+        self.assertTrue(r.step())  # queued NODE_HEALTH write
+        self.assertEqual(len(bus.operations), operations_before + 1)
+        self.assertEqual(bus.operations[-1].kind, "write")
+        self.assertEqual(peer_polls, [])
+        r._normal.clear()  # isolate the next fair peer-poll slot from telemetry backlog
+        self.assertTrue(r.step())  # ordinary peer poll
+        self.assertEqual(peer_polls, [cfg.motor_address])
+        self.assertEqual(len(bus.operations), operations_before + 2)
+        self.assertEqual(bus.operations[-1].kind, "read")
+        self.assertEqual(r.imu_last_seen, sample_at)
+        self.assertEqual(r.imu_last_sample, (1, 2, 3, 4, 5, 6))
+        health = [codec.decode(frame) for frame in output
+                  if codec.decode(frame)["name"] == "NODE_HEALTH"]
+        self.assertEqual(health[-1]["fields"]["sensor_valid_fields"], 0)
+
+        # Recovery must publish valid health now, despite the just-emitted
+        # expiry health frame and its normal one-second rate limit.
+        self.assertTrue(r._poll_imu())
+        self.assertEqual(r.imu_valid_fields, 3)
+        health = [codec.decode(frame) for frame in output
+                  if codec.decode(frame)["name"] == "NODE_HEALTH"]
+        self.assertEqual(health[-1]["fields"]["sensor_valid_fields"], 3)
+
     def test_ambiguous_write_is_unknown_and_never_replayed(self):
         self.router.submit_frame(ground_request(opcode=3, delta=0))
         self.bus.inject_fault("write")
