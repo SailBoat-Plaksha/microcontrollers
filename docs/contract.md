@@ -30,7 +30,7 @@ Supported: custom 200000–200010 plus standard `HEARTBEAT` (0), `PING` (4), `SC
 
 ### Hard behavioral rules
 
-1. Reboots/reconnects invalidate queued movement: a `boot_id` or `ground_session` change makes pending requests STALE/UNKNOWN; fresh status/session reconciliation precedes new movement.
+1. Reboots/reconnects invalidate queued movement: a `boot_id` or `ground_session` change makes pending requests STALE/UNKNOWN; fresh status/session reconciliation precedes new movement. New movement requires a valid reference and fresh feedback, with no active move, fault, or stale/unknown request. `output_enabled=0` is the normal idle state and does not by itself mean the motor is unready.
 2. Never replay motion after reconnect; never auto-fail-over an uncertain movement between transports. A failed/ambiguous write becomes UNKNOWN, followed by status inspection — not another movement write.
 3. Duplicate/reordered requests never apply twice (`request_id` + `ground_session` + `boot_id` correlation at Pi and motor). Busy motors do not restart/extend an action for a concurrent second client; the newer request may only supersede explicitly (SUPERSEDED result to the older one).
 4. Wrong target/source/authority, unsupported message, signed frame, or damaged CRC can never energize a motor. SSH bypasses only the radio hop — not routing, identity, authority, or validation.
@@ -95,7 +95,7 @@ class BoatClient:
 
 ## 6. Generated bindings
 
-`protocol/gen/build_dialect.py` mechanically builds `protocol/gen/arsem_standalone.xml` from `arsem.xml` (custom messages/enums) + verbatim `HEARTBEAT`/`PING`/`SCALED_IMU` and their referenced enums extracted from the vendored official definitions (`protocol/gen/upstream/`, sha256-pinned in `upstream/SHA256SUMS`), then runs official `mavgen` (C → `protocol/gen/C/arsem/`, Python3 → `protocol/gen/arsem.py`). `tests/test_contract.py` pins every CRC_EXTRA (200000–200010, HEARTBEAT 50, PING and SCALED_IMU from official generation) and cross-decodes `protocol.codec` ↔ generated Python ↔ generated C on the host. Firmware includes the generated headers (or `mailbox.h` constants with `mavlink_min.c` on the legacy bench path only).
+`protocol/gen/build_dialect.py` mechanically builds `protocol/gen/arsem_standalone.xml` from `arsem.xml` (custom messages/enums) plus the vendored official `HEARTBEAT`/`PING`/`SCALED_IMU` definitions and referenced enums (`protocol/gen/upstream/`, pinned in `SHA256SUMS`), then runs official `mavgen`. Generated C headers are under `protocol/gen/C/arsem_standalone/`; generated Python is `protocol/gen/arsem.py`. `tests/test_contract.py` pins each CRC_EXTRA (200000–200010, HEARTBEAT 50, PING and SCALED_IMU from official generation) and cross-decodes `protocol.codec` with generated Python and C on the host. Firmware includes the generated headers (or `mailbox.h` constants with `mavlink_min.c` on the legacy bench path only).
 
 ## 7. Lane ownership (exclusive; no cross-lane edits)
 
@@ -117,6 +117,6 @@ Integration fixes return to the owning lane as a fresh task carrying the origina
 - Scenario suite (one documented command, nonzero on failure, JSON/JUnit + JSONL trace output): `python3 -m scenarios.run` (defined by the scenarios lane).
 - Tests never open live ports or energize hardware by default; simulated bus adapters only. Physical checks live in the hardware checklist (`docs/hardware-checklist.md`).
 
-## 9. Deferred
+## 9. Remaining checks
 
-Browser QA (scenario 12) is included in the current implementation run. LoRa airtime/rate settings remain configurable until measured on hardware. Exact IMU model, servo/driver/encoder part numbers, occupied pins, and Pico variants are still needed before live deployment; the pin map disagreement (standby/RC GP9/GP21) must be resolved physically without rewriting protected RC code.
+GUI browser QA, integration reviews, firmware compilation, and physical I2C, radio, IMU, motor, encoder, and RC checks remain separate from host tests. Exact device models, occupied pins, and Pico variants need confirmation before live deployment. Resolve the current pin assignments against the actual board and wiring without changing protected RC code; see `docs/branch-review.md` and `docs/hardware-checklist.md`.
