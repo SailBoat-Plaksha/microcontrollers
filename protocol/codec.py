@@ -1,8 +1,7 @@
-"""Small MAVLink 2 codec for the ARSEM dialect and its serial/LoRa bridges.
+"""MAVLink 2 codec for the supported ARSEM and standard message set.
 
-The XML is the source of truth for custom payload layout and CRC_EXTRA.  This
-module deliberately handles unsigned MAVLink 2 frames only; signed frames are
-passed through by routers but never accepted as actuator commands here.
+Message layouts and CRC_EXTRA values come from arsem.xml and the mechanically
+generated standalone dialect. Signed frames are deliberately rejected.
 """
 
 import base64
@@ -16,7 +15,7 @@ MAGIC = 0xFD
 MAX_RADIO_TEXT = 240
 TYPE_FORMAT = {"uint8_t": "B", "int8_t": "b", "uint16_t": "H", "int16_t": "h",
                "uint32_t": "I", "int32_t": "i", "uint64_t": "Q", "int64_t": "q",
-               "float": "f", "double": "d"}
+               "float": "f", "double": "d", "uint8_t_mavlink_version": "B"}
 
 
 def crc(data, initial=0xFFFF):
@@ -28,39 +27,58 @@ def crc(data, initial=0xFFFF):
     return value
 
 
+def _definition(message):
+    fields = []
+    extension_fields = []
+    extensions = False
+    for child in message:
+        if child.tag == "extensions":
+            extensions = True
+        elif child.tag == "field":
+            field_type = child.attrib["type"]
+            if field_type not in TYPE_FORMAT:
+                raise ValueError("unsupported field type: " + field_type)
+            field = (field_type, child.attrib["name"])
+            (extension_fields if extensions else fields).append(field)
+    fields.sort(key=lambda field: -struct.calcsize(TYPE_FORMAT[field[0]]))
+    wire_fields = fields + extension_fields
+    crc_fields = [("uint8_t" if field_type == "uint8_t_mavlink_version" else field_type, name)
+                  for field_type, name in fields]
+    seed = (message.attrib["name"] + " ").encode()
+    for field_type, name in crc_fields:
+        seed += (field_type + " " + name + " ").encode()
+    return {
+        "name": message.attrib["name"],
+        "fields": wire_fields,
+        "format": "<" + "".join(TYPE_FORMAT[field_type] for field_type, _ in wire_fields),
+        "crc_extra": (lambda check: (check & 0xFF) ^ (check >> 8))(crc(seed)),
+        "min_length": struct.calcsize("<" + "".join(TYPE_FORMAT[t] for t, _ in fields)),
+        "max_length": struct.calcsize("<" + "".join(TYPE_FORMAT[t] for t, _ in wire_fields)),
+        "defaults": {"mavlink_version": 3} if message.attrib["name"] == "HEARTBEAT" else {},
+    }
+
+
 def definitions():
     root = ET.parse(Path(__file__).with_name("arsem.xml")).getroot()
     result = {}
     for message in root.findall("./messages/message"):
-        fields = []
-        for field in message.findall("field"):
-            field_type = field.attrib["type"]
-            if field_type not in TYPE_FORMAT:
-                raise ValueError("unsupported field type: " + field_type)
-            fields.append((field_type, field.attrib["name"]))
-        fields.sort(key=lambda field: -struct.calcsize(TYPE_FORMAT[field[0]]))
-        seed = (message.attrib["name"] + " ").encode()
-        for field_type, name in fields:
-            seed += (field_type + " " + name + " ").encode()
-        check = crc(seed)
-        result[int(message.attrib["id"])] = {
-            "name": message.attrib["name"],
-            "fields": fields,
-            "format": "<" + "".join(TYPE_FORMAT[field_type] for field_type, _ in fields),
-            "crc_extra": (check & 0xFF) ^ (check >> 8),
-        }
+        result[int(message.attrib["id"])] = _definition(message)
+    standalone = Path(__file__).with_name("gen") / "arsem_standalone.xml"
+    if standalone.exists():
+        root = ET.parse(standalone).getroot()
+        for message in root.findall("./messages/message"):
+            result[int(message.attrib["id"])] = _definition(message)
     return result
 
 
 MESSAGES = definitions()
 BY_NAME = {definition["name"]: (id_, definition) for id_, definition in MESSAGES.items()}
-# HEARTBEAT from common.xml. Used only for inspection and a known CRC check.
-MESSAGES[0] = {"name": "HEARTBEAT", "fields": [], "format": "", "crc_extra": 50}
 
 
 def encode(name, fields, *, system=1, component=1, sequence=0):
     message_id, definition = BY_NAME[name]
-    payload = struct.pack(definition["format"], *(fields[field_name] for _, field_name in definition["fields"]))
+    values = {**definition.get("defaults", {}), **fields}
+    payload = struct.pack(definition["format"], *(values[field_name] for _, field_name in definition["fields"]))
     payload = payload.rstrip(b"\0") or b"\0"
     header = bytes((len(payload), 0, 0, sequence, system, component,
                     message_id & 0xFF, (message_id >> 8) & 0xFF, (message_id >> 16) & 0xFF))
