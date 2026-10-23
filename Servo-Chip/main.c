@@ -11,6 +11,9 @@
 #include "include/servo.h"
 #include "include/rc_control.h"
 #include "include/operating_loops.h"
+#ifdef BOAT_MIDSEM_DEMO
+#include "../motor-mcu/pico_mailbox.h"
+#endif
 
 #include "hardware/uart.h"
 #include "pico/stdlib.h"
@@ -26,7 +29,14 @@
 #define ERR_LED 17
 
 /* ==== Motor Driver Config ==== */
+#ifndef MOTOR_STANDBY_PIN
+#define MOTOR_STANDBY_PIN 9
+#endif
+#ifdef BOAT_MIDSEM_DEMO
+#define STANDBY_PIN MOTOR_STANDBY_PIN
+#else
 #define STANDBY_PIN 9
+#endif
 
 /* -- Encoders -- */
 #define M1_ENC_1 2
@@ -87,7 +97,11 @@ int setup(void) {
 
 int motorSetup(void) {
   poutit(STANDBY_PIN);
+#ifndef BOAT_MIDSEM_DEMO
   standby(true); // Hold driver in standby
+#else
+  gpio_put(STANDBY_PIN, 0); // Demo adapter uses the configured main.c standby pin.
+#endif
 
   /* ---- Define Motor 1 ---- */
   motor1_state = (mState){
@@ -210,7 +224,13 @@ int main(void) {
   sleep_ms(1000);
 
   // Ensure systems are running
+#ifndef BOAT_MIDSEM_DEMO
   startup_tests();
+#endif
+
+#ifdef BOAT_MIDSEM_DEMO
+  motor_mcu_start(sail_motor, rudder_motor);
+#endif
 
   // Start looking for things to do
   idling_loop();
