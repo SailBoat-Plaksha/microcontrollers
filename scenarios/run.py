@@ -19,6 +19,11 @@ from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_GROUND
 from protocol import codec
 from scenarios.fixtures import (CapturingTransport, FragmentedStream,
                                 MailboxFixture, ManualClock, ModemFixture)
+from scenarios.integrated import (run_ambiguous_write, run_actual_motor_route,
+                                  run_deadline_and_stop_priority,
+                                  run_motor_guards, run_motor_local_deadline,
+                                  run_motor_ping, run_pi_owned_imu,
+                                  run_rc_yield, run_step_and_duplicate)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "scenarios" / "results"
@@ -42,17 +47,17 @@ class Scenario:
 
 
 SCENARIO_SPECS = [
-    (1, "LoRa and SSH routing with correlated motor status", "Pi router, LoRa gateways, mailbox and motor firmware harnesses are not present in this checkout."),
-    (2, "Pi-owned IMU sampling, units and freshness", "The Pi IMU acquisition and telemetry implementations are not present in this checkout."),
-    (3, "Ping-all responses without loops", "Node responders and router forwarding behavior are not present in this checkout."),
-    (4, "Invalid target, source, authority, message and CRC", "This checkout can test client decoding only; motor non-energization requires the Pi and motor harnesses."),
-    (5, "Absolute, STEP deduplication, sessions and concurrency", "Production validation, motor state, deduplication and concurrent-client handling are not present."),
-    (6, "STOP priority and bounded motor deadlines", "Queue scheduling and onboard motor deadline handling are not present."),
-    (7, "Loss, ambiguity, truncation and transport recovery", "No production router or firmware harness is available to verify end-to-end uncertainty and recovery."),
-    (8, "Node reboot and reconnect invalidation", "Production node boot/session reconciliation is not present; only client reconnect behavior is checked."),
-    (9, "Missing peers, stale IMU and queue overflow", "No production bus poller, IMU reader or bounded queues are present."),
-    (10, "RC takeover and autonomous ownership", "The motor adapter host harness is not present; protected RC code is intentionally outside this lane."),
-    (11, "Saturated telemetry fairness", "Production queues, status scheduling and health polling are not present."),
+    (1, "LoRa and SSH routing with correlated motor status", "Integrated production router-to-compiled-motor route passes. Full SSH stdio process delivery and LoRa ground gateway/comms relay are not exercised here."),
+    (2, "Pi-owned IMU sampling, units and freshness", "Pi-owned register read and mg/mrad/s serialization pass. Stale-sample/deadline and equivalent SSH plus LoRa delivery remain unverified."),
+    (3, "Ping-all responses without loops", "Actual motor responder returns one matched reply. Comms responder and all-node no-loop behavior remain unverified."),
+    (4, "Invalid target, source, authority, message and CRC", "Compiled motor rejects wrong source/target/authority, hard travel limit and damaged CRC without output. Signed and unsupported-message cases remain unverified end to end."),
+    (5, "Absolute, STEP deduplication, sessions and concurrency", "Integrated absolute move and independent feedback completion pass. STEP/reorder/rollover, concurrent clients, reference/freshness and reboot-ledger coverage remain incomplete."),
+    (6, "STOP priority and bounded motor deadlines", ""),
+    (7, "Loss, ambiguity, truncation and transport recovery", "Actual client ambiguous write becomes UNKNOWN and reconnect sends no replay. Bus read/write faults, short reads and modem loss/recovery remain incomplete."),
+    (8, "Node reboot and reconnect invalidation", "Client reconnect path is exercised. Actual Pi/motor/comms boot changes and request invalidation remain incomplete."),
+    (9, "Missing peers, stale IMU and queue overflow", "One configured IMU read and motor poll pass. Stale sensor, disappearing peer, and healthy-peer isolation under bus faults remain incomplete."),
+    (10, "RC takeover and autonomous ownership", ""),
+    (11, "Saturated telemetry fairness", "Full bounded-queue STOP/status/health priority and fair polling under saturation remain incomplete."),
 ]
 
 
@@ -299,6 +304,15 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
     scenarios = [Scenario(number, title, reason) for number, title, reason in SCENARIO_SPECS]
     by_number = {scenario.number: scenario for scenario in scenarios}
     assignments = [
+        (1, "BoatClient → production router → compiled motor adapter; correlated status and measured completion", lambda: _integration(run_actual_motor_route)),
+        (2, "Pi-owned IMU register acquisition and encoded units", lambda: _integration(run_pi_owned_imu)),
+        (3, "Actual motor ping responder", lambda: _integration(run_motor_ping)),
+        (4, "Compiled adapter and router invalid-request guards", lambda: _integration(run_motor_guards)),
+        (5, "Compiled adapter STEP resolution and duplicate suppression", lambda: _integration(run_step_and_duplicate)),
+        (6, "Router STOP priority with local timeout", lambda: _integration(run_deadline_and_stop_priority)),
+        (6, "Compiled adapter local deadline distinct from STOP", lambda: _integration(run_motor_local_deadline)),
+        (10, "Compiled adapter yields autonomous output to RC ownership", lambda: _integration(run_rc_yield)),
+        (7, "Integrated ambiguous write becomes UNKNOWN without replay", lambda: _integration(run_ambiguous_write)),
         (1, "BoatClient request encoding", _check_client_request_fields),
         (2, "Client ping and IMU decoding", _check_client_ping_and_imu),
         (3, "Client addressed ping matching", _check_client_ping_and_imu),
@@ -316,12 +330,24 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
         if check.status == "PASS":
             by_number[number].trace.extend(emitted)
             trace.extend({"scenario": number, **event} for event in emitted)
+    fully_covered = {6, 10}
     for scenario in scenarios:
-        scenario.status = "FAIL" if any(check.status == "FAIL" for check in scenario.checks) else "PENDING"
-        pending = {"event": "integration_pending", "reason": scenario.pending_reason}
-        scenario.trace.insert(0, pending)
-        trace.append({"scenario": scenario.number, **pending})
+        scenario.status = ("FAIL" if any(check.status == "FAIL" for check in scenario.checks) else
+                           "PASS" if scenario.number in fully_covered and scenario.checks else
+                           "PENDING")
+        if scenario.status == "PENDING":
+            event = {"event": "integration_pending", "reason": scenario.pending_reason}
+        else:
+            event = {"event": "scenario_complete", "status": scenario.status}
+        scenario.trace.insert(0, event)
+        trace.append({"scenario": scenario.number, **event})
     return scenarios, trace
+
+
+def _integration(run):
+    evidence = run()
+    return "Production path assertion passed; evidence trace records real frames, requests, identities, clock and measured state.", [
+        {"event": "integrated_check", "evidence": evidence}]
 
 
 def _document(scenarios: list[Scenario], trace: list[dict]) -> dict:
@@ -333,7 +359,7 @@ def _document(scenarios: list[Scenario], trace: list[dict]) -> dict:
         "overall": overall,
         "exit_policy": "nonzero when any scenario is FAIL or PENDING",
         "scenarios": [{"id": s.number, "title": s.title, "status": s.status,
-                       "pending_reason": s.pending_reason,
+                       "pending_reason": s.pending_reason or None,
                        "checks": [vars(check) for check in s.checks],
                        "trace": s.trace} for s in scenarios],
         "trace_events": trace,
