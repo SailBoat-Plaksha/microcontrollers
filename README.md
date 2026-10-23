@@ -16,3 +16,6 @@ They test frame identity, fragmentation, CRC rejection, LoRa encoding,
 Python/C compatibility, and actuator command checks without radio hardware.
 See `evidence/README.md` for presentation images and the remaining hardware
 checks.
+
+For current boat midsem setup, software checks, and separately labeled Pi and
+firmware steps, see [`docs/runbook.md`](docs/runbook.md).

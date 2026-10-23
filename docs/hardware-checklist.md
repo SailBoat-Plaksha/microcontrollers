@@ -5,9 +5,9 @@ This checklist records work still required before physical deployment. Source in
 ## Identify and map hardware
 
 - [ ] Record exact Pico variant/revision, servo or geared motor model, driver board/model, encoder model and counts specification, RC receiver/transmitter, radio model/configuration, and IMU model/address.
-- [ ] With power off, trace and record all GPIO connections against the actual board. Resolve GP9 standby versus prior RC flag use, and GP21 RC mode versus standby use. Resolve `dev` GP18/GP19 RC inputs versus motor direction outputs on those same GPIOs. Confirm encoder pins GP2–GP5 and every other occupied pin.
+- [ ] With power off, trace and record all GPIO connections against the actual board. In this branch, `rc_control.c` configures RC mode GP21, but `main.c` and `operating_loops.c` declare GP9; `main.c` declares motor standby GP9 while `servo.c`/`servo.h` use GP21, overlapping the configured RC mode input. The current `main.c` motor outputs GP10–GP15 do not overlap the current RC inputs GP18/GP19. Resolve these assignments against board wiring. Older `dev` used motor outputs GP18/GP19 and conflicts with those RC inputs, but those are not the current branch assignments. Confirm encoder pins GP2–GP5 and every other occupied pin.
 - [ ] Confirm reference ground, logic levels, pull-ups, motor supply, polarity and driver enable/standby behavior from the actual component documentation and measurements.
-- [ ] Establish safe motor disconnect/disable procedure before applying power. Confirm the boot path's `startup_tests()` motion is expected and controlled before flashing/running that path.
+- [ ] Establish safe motor disconnect/disable procedure before applying power. The integrated demo build disables the startup motor sweep, but legacy builds that use `startup_tests()` still move both motors at startup. Confirm the selected build path before powering motors.
 
 ## Firmware build and flash
 
@@ -37,7 +37,7 @@ This checklist records work still required before physical deployment. Source in
 
 ## RC control
 
-- [ ] After resolving the GP9/GP21 and GP18/GP19 conflicts against the real wiring, confirm receiver channel assignments and mode-switch polarity without motor power.
+- [ ] After resolving the current GP9/GP21 assignments against the real wiring, confirm receiver channel assignments and mode-switch polarity without motor power. Check older branch GP18/GP19 assignments only if that branch's firmware is selected.
 - [ ] Measure pulse widths for rudder, sail and mode at neutral and both endpoints; check loss-of-signal and invalid pulse behavior.
 - [ ] With motors safely restrained/disabled initially, confirm RC mode threshold, deadband, direction and proportional output mapping. Then verify RC authority takes priority and autonomous movement is denied while RC owns control.
 - [ ] Test transition into and out of RC mode and receiver loss with a safe physical setup. Record actual observed behavior; do not change the protected RC implementation as part of this checklist.
