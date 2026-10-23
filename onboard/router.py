@@ -207,11 +207,11 @@ class BoatRouter:
                 self._reject_request(fields, ingress, result=4, state=0,
                                      reason="selected actuator is busy")
                 return False
-            if actuator_status["control_source"] != 3:
+            if actuator_status["control_source"] not in (0, 2, 3):
                 self._reject_request(fields, ingress, result=2, state=6,
                                      reason="selected actuator is owned by another control source")
                 return False
-            if fields["opcode"] == 2 and not health[2]:
+            if not health[2]:
                 self._reject_request(fields, ingress, result=3, state=6,
                                      reason="motor feedback is not marked valid; STEP not forwarded")
                 return False
@@ -481,8 +481,8 @@ class BoatRouter:
                 if (now - write.queued_at > 5.0 or health is None or now - health[0] > 5.0 or
                         health[3] != 0 or actuator_status is None or status_at is None or
                         now - status_at > 5.0 or actuator_status["fault_flags"] != 0 or
-                        actuator_status["result"] == 1 or actuator_status["control_source"] != 3 or
-                        (record.get("opcode") == 2 and not health[2])):
+                        actuator_status["result"] == 1 or actuator_status["control_source"] not in (0, 2, 3) or
+                        not health[2]):
                     boot = self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0)
                     self._make_result(write.key, boot, 0, 4, 0,
                                       "movement readiness or queue freshness expired before write",
@@ -503,6 +503,8 @@ class BoatRouter:
                                   "ambiguous motor write; outcome unknown, inspect status before motion")
                 if write.address == self.config.motor_address:
                     self.motor_reconcile_required = True
+                    self.motor_status.clear()
+                    self.motor_status_at.clear()
             self._consecutive_writes += 1
             return False
         self._consecutive_writes += 1

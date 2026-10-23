@@ -264,6 +264,22 @@ class RouterTests(unittest.TestCase):
         self.router._observe_node_message(codec.decode(frame), frame)
         self.assertFalse(self.router.submit_frame(ground_request()))
 
+    def test_idle_autonomous_status_accepts_remote_operator_request(self):
+        frame = status(control_source=2, enabled=0)
+        self.router._observe_node_message(codec.decode(frame), frame)
+        self.assertTrue(self.router.submit_frame(ground_request()))
+
+    def test_ambiguous_write_requires_status_newer_than_failure(self):
+        self.assertTrue(self.router.submit_frame(ground_request(opcode=3, delta=0)))
+        self.bus.inject_fault("write")
+        self.router.step()
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=2)))
+
+    def test_absolute_also_requires_valid_reference(self):
+        frame = health(feedback=0)
+        self.router._observe_node_message(codec.decode(frame), frame)
+        self.assertFalse(self.router.submit_frame(ground_request(opcode=1)))
+
     def test_observed_protected_result_coalesces_by_request_at_full_queue(self):
         router = BoatRouter(self.bus, ServiceConfig(queue_limit=4), clock=self.clock,
                             on_frame=self.output.append, on_event=self.events.append)
