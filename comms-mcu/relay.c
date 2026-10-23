@@ -49,6 +49,38 @@ static uint8_t source_component(const mavlink_message_t *msg) {
     return msg->compid;
 }
 
+static bool correlation_matches(const relay_correlation_t *key, uint32_t session,
+                                uint32_t request_id) {
+    return key->ground_session == session && key->request_id == request_id;
+}
+
+static int reservation_index(const relay_t *relay, uint32_t session,
+                             uint32_t request_id) {
+    for (uint8_t i = 0; i < relay->response_reservation_count; ++i)
+        if (correlation_matches(&relay->response_reservations[i], session, request_id))
+            return (int)i;
+    return -1;
+}
+
+static void reservation_remove(relay_t *relay, uint32_t session, uint32_t request_id) {
+    int index = reservation_index(relay, session, request_id);
+    if (index < 0) return;
+    for (uint8_t i = (uint8_t)index; i + 1u < relay->response_reservation_count; ++i)
+        relay->response_reservations[i] = relay->response_reservations[i + 1u];
+    relay->response_reservation_count--;
+}
+
+static bool terminal_correlation_queued(const relay_queue_t *queue,
+                                        const uint8_t *bytes, uint8_t length) {
+    for (uint8_t i = 0; i < queue->count; ++i) {
+        const relay_item_t *item = &queue->entries[i];
+        if (item->msgid == MAVLINK_MSG_ID_REQUEST_RESULT && item->length >= 18u &&
+            length >= 18u && memcmp(item->bytes + 10, bytes + 10, 8u) == 0)
+            return true;
+    }
+    return false;
+}
+
 static void count_queue_drop(relay_t *relay, const relay_queue_t *queue) {
     relay->queue_drops++;
     if (queue == &relay->to_pi) relay->radio_rx_errors++;
@@ -58,6 +90,20 @@ static void count_queue_drop(relay_t *relay, const relay_queue_t *queue) {
 static bool queue_push(relay_t *relay, relay_queue_t *queue,
                        const uint8_t *bytes, uint8_t length, uint8_t priority,
                        const mavlink_message_t *msg) {
+    /* A terminal result is a state snapshot for one correlation key. Keep the
+     * latest observation for that request in the bounded terminal queue. */
+    if (msg->msgid == MAVLINK_MSG_ID_REQUEST_RESULT) {
+        for (uint8_t i = 0; i < queue->count; ++i) {
+            relay_item_t *existing = &queue->entries[i];
+            if (existing->msgid == msg->msgid && existing->length >= 18u &&
+                length >= 18u && memcmp(existing->bytes + 10, bytes + 10, 8u) == 0) {
+                memcpy(existing->bytes, bytes, length);
+                existing->length = length;
+                existing->priority = priority;
+                return true;
+            }
+        }
+    }
     /* Replace queued routine samples from the same sender before consuming
      * another slot. These messages describe current state, not events. */
     if (priority >= 3u) {
@@ -246,7 +292,9 @@ relay_result_t relay_radio_frame(relay_t *relay, const uint8_t *frame, size_t le
         relay->radio_rx_errors++;
         return result;
     }
-    if (msg.msgid == MAVLINK_MSG_ID_PING && ping_is_broadcast_request(&msg))
+    if (msg.msgid == MAVLINK_MSG_ID_PING &&
+        msg.sysid == ARSEM_SYSTEM_GROUND && msg.compid == ARSEM_COMPONENT_GROUND &&
+        ping_is_broadcast_request(&msg))
         reply_to_ping(relay, &msg, true);
     if (!queue_push(relay, &relay->to_pi, frame, frame_length,
                     frame_priority(&msg), &msg)) return RELAY_REJECT_QUEUE_FULL;
@@ -278,8 +326,46 @@ relay_result_t relay_i2c_write(relay_t *relay, const uint8_t mailbox[RELAY_MAX_F
     relay_queue_t *destination = msg.msgid == MAVLINK_MSG_ID_REQUEST_RESULT ?
                                  &relay->terminal_to_radio : &relay->to_radio;
     uint8_t priority = msg.msgid == MAVLINK_MSG_ID_REQUEST_RESULT ? 0u : frame_priority(&msg);
+    bool reserve_response = false;
+    uint32_t session = 0, request_id = 0;
+    if (msg.msgid == MAVLINK_MSG_ID_ACTUATOR_REQUEST) {
+        mavlink_actuator_request_t request;
+        mavlink_msg_actuator_request_decode(&msg, &request);
+        if (request.opcode == 1u || request.opcode == 2u) {
+            session = request.ground_session;
+            request_id = request.request_id;
+            bool already_reserved = reservation_index(relay, session, request_id) >= 0;
+            if (!already_reserved && relay->terminal_to_radio.count +
+                relay->response_reservation_count + (relay->terminal_inflight_valid ? 1u : 0u)
+                >= RELAY_QUEUE_CAPACITY) {
+                relay->queue_drops++;
+                relay->radio_tx_errors++;
+                return RELAY_REJECT_QUEUE_FULL;
+            }
+            reserve_response = !already_reserved;
+        }
+    }
+    if (msg.msgid == MAVLINK_MSG_ID_REQUEST_RESULT &&
+        !terminal_correlation_queued(&relay->terminal_to_radio, mailbox, frame_length) &&
+        relay->terminal_to_radio.count + (relay->terminal_inflight_valid ? 1u : 0u) >=
+            RELAY_QUEUE_CAPACITY) {
+        relay->queue_drops++;
+        relay->radio_tx_errors++;
+        return RELAY_REJECT_QUEUE_FULL;
+    }
     if (!queue_push(relay, destination, mailbox, frame_length, priority, &msg))
         return RELAY_REJECT_QUEUE_FULL;
+    if (reserve_response) {
+        relay_correlation_t *key =
+            &relay->response_reservations[relay->response_reservation_count++];
+        key->ground_session = session;
+        key->request_id = request_id;
+    }
+    if (msg.msgid == MAVLINK_MSG_ID_REQUEST_RESULT) {
+        mavlink_request_result_t result;
+        mavlink_msg_request_result_decode(&msg, &result);
+        reservation_remove(relay, result.ground_session, result.request_id);
+    }
     relay->forwarded_from_pi++;
     return RELAY_ACCEPTED;
 }
@@ -304,11 +390,57 @@ bool relay_i2c_read(relay_t *relay, uint8_t mailbox[RELAY_MAX_FRAME]) {
 }
 
 bool relay_radio_next(relay_t *relay, uint8_t frame[RELAY_MAX_FRAME], size_t *length) {
+    if (relay->terminal_inflight_valid) return false;
     if (queue_pop(&relay->terminal_to_radio, frame, length)) {
-        relay->radio_tx_packets++;
+        relay_item_t *item = &relay->terminal_inflight;
+        memset(item, 0, sizeof(*item));
+        memcpy(item->bytes, frame, *length);
+        item->length = (uint8_t)*length;
+        item->priority = 0u;
+        item->msgid = MAVLINK_MSG_ID_REQUEST_RESULT;
+        item->sysid = frame[5];
+        item->compid = frame[6];
+        relay->terminal_inflight_valid = true;
         return true;
     }
-    if (!queue_pop(&relay->to_radio, frame, length)) return false;
-    relay->radio_tx_packets++;
+    return queue_pop(&relay->to_radio, frame, length);
+}
+
+bool relay_radio_retain_terminal(relay_t *relay, const uint8_t *frame, size_t length) {
+    if (!relay || !frame || length > RELAY_MAX_FRAME) return false;
+    mavlink_message_t msg;
+    uint8_t frame_length = 0;
+    if (relay_validate_frame(relay, frame, length, false, &msg, &frame_length) != RELAY_ACCEPTED ||
+        msg.msgid != MAVLINK_MSG_ID_REQUEST_RESULT) return false;
+    if (relay->terminal_inflight_valid && relay->terminal_inflight.length >= 18u &&
+        memcmp(relay->terminal_inflight.bytes + 10, frame + 10, 8u) == 0)
+        relay->terminal_inflight_valid = false;
+    if (!queue_push(relay, &relay->terminal_to_radio, frame, frame_length, 0u, &msg))
+        return false;
     return true;
+}
+
+void relay_radio_complete(relay_t *relay, bool accepted) {
+    if (!relay || !relay->terminal_inflight_valid) return;
+    if (!accepted) {
+        mavlink_message_t msg;
+        uint8_t frame_length = 0;
+        if (relay_validate_frame(relay, relay->terminal_inflight.bytes,
+                relay->terminal_inflight.length, false, &msg, &frame_length) == RELAY_ACCEPTED)
+            (void)queue_push(relay, &relay->terminal_to_radio,
+                relay->terminal_inflight.bytes, frame_length, 0u, &msg);
+    }
+    relay->terminal_inflight_valid = false;
+}
+
+void relay_radio_reject_movement(relay_t *relay, const uint8_t *frame, size_t length) {
+    if (!relay || !frame || length > RELAY_MAX_FRAME) return;
+    mavlink_message_t msg;
+    uint8_t frame_length = 0;
+    if (relay_validate_frame(relay, frame, length, false, &msg, &frame_length) != RELAY_ACCEPTED ||
+        msg.msgid != MAVLINK_MSG_ID_ACTUATOR_REQUEST) return;
+    mavlink_actuator_request_t request;
+    mavlink_msg_actuator_request_decode(&msg, &request);
+    if (request.opcode == 1u || request.opcode == 2u)
+        reservation_remove(relay, request.ground_session, request.request_id);
 }

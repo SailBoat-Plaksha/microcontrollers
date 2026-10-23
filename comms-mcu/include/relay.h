@@ -27,9 +27,18 @@ typedef struct {
 } relay_queue_t;
 
 typedef struct {
+    uint32_t ground_session;
+    uint32_t request_id;
+} relay_correlation_t;
+
+typedef struct {
     relay_queue_t to_pi;
     relay_queue_t to_radio;
     relay_queue_t terminal_to_radio;
+    relay_item_t terminal_inflight;
+    bool terminal_inflight_valid;
+    relay_correlation_t response_reservations[RELAY_QUEUE_CAPACITY];
+    uint8_t response_reservation_count;
     uint8_t health_snapshot[RELAY_MAX_FRAME];
     uint8_t heartbeat_snapshot[RELAY_MAX_FRAME];
     uint8_t link_snapshot[RELAY_MAX_FRAME];
@@ -72,6 +81,9 @@ relay_result_t relay_radio_frame(relay_t *relay, const uint8_t *frame, size_t le
 relay_result_t relay_i2c_write(relay_t *relay, const uint8_t mailbox[RELAY_MAX_FRAME]);
 bool relay_i2c_read(relay_t *relay, uint8_t mailbox[RELAY_MAX_FRAME]);
 bool relay_radio_next(relay_t *relay, uint8_t frame[RELAY_MAX_FRAME], size_t *length);
+bool relay_radio_retain_terminal(relay_t *relay, const uint8_t *frame, size_t length);
+void relay_radio_complete(relay_t *relay, bool accepted);
+void relay_radio_reject_movement(relay_t *relay, const uint8_t *frame, size_t length);
 void relay_refresh_heartbeat(relay_t *relay, uint32_t now_ms);
 void relay_refresh_health(relay_t *relay, uint32_t now_ms);
 void relay_refresh_link(relay_t *relay, uint32_t now_ms, bool connected,

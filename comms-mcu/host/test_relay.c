@@ -45,6 +45,16 @@ int main(void) {
     assert(saw_startup_health && saw_startup_heartbeat);
     size_t length = request_frame(frame, 1, 7);
     assert(length == 31);
+    uint8_t invalid[64];
+    memcpy(invalid, frame, length);
+    invalid[length - 1u] ^= 1u;
+    assert(relay_radio_frame(&relay, invalid, length, 199) == RELAY_REJECT_MALFORMED);
+    memcpy(invalid, frame, length);
+    invalid[2] = MAVLINK_IFLAG_SIGNED;
+    assert(relay_radio_frame(&relay, invalid, length, 199) == RELAY_REJECT_SIGNED);
+    memcpy(invalid, frame, length);
+    invalid[7] = 0x28; invalid[8] = 0x23; invalid[9] = 0;
+    assert(relay_radio_frame(&relay, invalid, length, 199) != RELAY_ACCEPTED);
     assert(relay_radio_frame(&relay, frame, length, 200) == RELAY_ACCEPTED);
     assert(relay_i2c_read(&relay, result));
     assert(memcmp(result, frame, length) == 0);
@@ -117,9 +127,30 @@ int main(void) {
     assert(relay_radio_next(&relay, result, &sent_length));
     assert(relay_validate_frame(&relay, result, 64, true, &decoded, &decoded_length) == RELAY_ACCEPTED);
     assert(decoded.msgid == MAVLINK_MSG_ID_REQUEST_RESULT);
+    relay_radio_complete(&relay, true);
     assert(relay_radio_next(&relay, result, &sent_length));
     assert(relay_validate_frame(&relay, result, 64, true, &decoded, &decoded_length) == RELAY_ACCEPTED);
     assert(decoded.msgid == MAVLINK_MSG_ID_HEARTBEAT);
+
+    /* A terminal correlation retains its latest state in one bounded slot. */
+    mavlink_message_t terminal_update;
+    mavlink_msg_request_result_pack(ARSEM_SYSTEM_BOAT, ARSEM_COMPONENT_PI,
+        &terminal_update, 99, 8, 77, 5, 1, 4, ARSEM_SYSTEM_GROUND, ARSEM_COMPONENT_GROUND);
+    memset(padded, 0, sizeof(padded));
+    (void)pack(&terminal_update, padded);
+    assert(relay_i2c_write(&relay, padded) == RELAY_ACCEPTED);
+    mavlink_msg_request_result_pack(ARSEM_SYSTEM_BOAT, ARSEM_COMPONENT_PI,
+        &terminal_update, 99, 8, 77, 5, 1, 5, ARSEM_SYSTEM_GROUND, ARSEM_COMPONENT_GROUND);
+    memset(padded, 0, sizeof(padded));
+    (void)pack(&terminal_update, padded);
+    assert(relay_i2c_write(&relay, padded) == RELAY_ACCEPTED);
+    assert(relay.terminal_to_radio.count == 1);
+    assert(relay_radio_next(&relay, result, &sent_length));
+    assert(relay_validate_frame(&relay, result, 64, true, &decoded, &decoded_length) == RELAY_ACCEPTED);
+    mavlink_request_result_t latest_result;
+    mavlink_msg_request_result_decode(&decoded, &latest_result);
+    assert(latest_result.state == 5);
+    relay_radio_complete(&relay, true);
 
     /* Broadcast ping returns one locally sourced addressed reply on radio and
      * is also forwarded to Pi. The addressed reply is never answered again. */
@@ -139,6 +170,20 @@ int main(void) {
     assert(relay_i2c_read(&relay, result));
     assert(memcmp(result, frame, length) == 0);
     assert(relay.to_pi.count == 0);
+
+    /* Only the ground identity may trigger a radio-side local PING reply. */
+    mavlink_msg_ping_pack(1, 1, &ping, 100, 45, 0, 0);
+    length = pack(&ping, frame);
+    uint8_t local_replies_before = 0;
+    for (uint8_t i = 0; i < relay.to_radio.count; ++i)
+        if (relay.to_radio.entries[i].msgid == MAVLINK_MSG_ID_PING) local_replies_before++;
+    assert(relay_radio_frame(&relay, frame, length, 301) == RELAY_ACCEPTED);
+    uint8_t local_replies_after = 0;
+    for (uint8_t i = 0; i < relay.to_radio.count; ++i)
+        if (relay.to_radio.entries[i].msgid == MAVLINK_MSG_ID_PING) local_replies_after++;
+    assert(local_replies_after == local_replies_before);
+    assert(relay_i2c_read(&relay, result));
+    assert(memcmp(result, frame, length) == 0);
 
     /* Persistent health snapshot survives empty event reads and reports boot
      * identity, UNKNOWN reset reason, and no locally acquired sensor fields. */
@@ -206,6 +251,37 @@ int main(void) {
     mavlink_actuator_request_t stop;
     mavlink_msg_actuator_request_decode(&decoded, &stop);
     assert(stop.opcode == 3 && stop.delta_cdeg == 0);
+
+    /* Movement admission reserves a terminal-result slot until that correlated
+     * result is sent onward; the bounded queue never silently overcommits. */
+    relay_t capacity_relay;
+    relay_init(&capacity_relay, 66, 0);
+    for (uint32_t i = 1; i <= RELAY_QUEUE_CAPACITY; ++i) {
+        length = boat_request_frame(frame, 1, i);
+        memset(padded, 0, sizeof(padded));
+        memcpy(padded, frame, 64);
+        assert(relay_i2c_write(&capacity_relay, padded) == RELAY_ACCEPTED);
+        assert(relay_radio_next(&capacity_relay, result, &sent_length));
+    }
+    assert(capacity_relay.response_reservation_count == RELAY_QUEUE_CAPACITY);
+    length = boat_request_frame(frame, 1, 99);
+    memset(padded, 0, sizeof(padded));
+    memcpy(padded, frame, 64);
+    assert(relay_i2c_write(&capacity_relay, padded) == RELAY_REJECT_QUEUE_FULL);
+    assert(capacity_relay.queue_drops == 1 && capacity_relay.radio_tx_errors == 1);
+    mavlink_msg_request_result_pack(ARSEM_SYSTEM_BOAT, ARSEM_COMPONENT_PI,
+        &terminal_update, 99, 1, 77, 5, 1, 4, ARSEM_SYSTEM_GROUND, ARSEM_COMPONENT_GROUND);
+    memset(padded, 0, sizeof(padded));
+    (void)pack(&terminal_update, padded);
+    assert(relay_i2c_write(&capacity_relay, padded) == RELAY_ACCEPTED);
+    assert(capacity_relay.response_reservation_count == RELAY_QUEUE_CAPACITY - 1u);
+    assert(relay_radio_next(&capacity_relay, result, &sent_length));
+    relay_radio_complete(&capacity_relay, true);
+    length = boat_request_frame(frame, 1, 99);
+    memset(padded, 0, sizeof(padded));
+    memcpy(padded, frame, 64);
+    assert(relay_i2c_write(&capacity_relay, padded) == RELAY_ACCEPTED);
+    assert(capacity_relay.response_reservation_count == RELAY_QUEUE_CAPACITY);
 
     printf("comms relay host harness: PASS\n");
     return 0;

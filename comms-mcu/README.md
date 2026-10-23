@@ -21,10 +21,11 @@ the Pi through empty mailbox reads. Pi writes that already have component 158
 as their source are rejected, which prevents snapshots or ping replies from
 circulating back through the relay. Radio RSSI/SNR are copied from the modem's `+RCV` fields into
 `LINK_STATUS`; the fields become `INT16_MIN` when no sample has arrived in five
-seconds or parsing fails. Radio TX packet counters count frames handed to the
-modem command builder, not confirmed over-air delivery. `connected` means the
-modem accepted its configuration commands; the module provides no association
-state to prove a remote radio is reachable.
+seconds or parsing fails. The TX packet counter increments only after a modem
+`+OK` send response. This means the modem accepted the command; it does not
+prove over-air delivery. `connected` means the modem accepted its configuration
+commands; the module provides no association state to prove a remote radio is
+reachable.
 
 ## Host harness
 
@@ -53,19 +54,38 @@ Scenario code can use the same public functions from `include/relay.h` and
 The host harness injects a split `+RCV` line and verifies the resulting mailbox
 frame is byte-identical to the ground request. It also checks signed, bad CRC,
 oversized and concatenated mailbox frames, ping replies, snapshots and terminal
-response priority.
+response priority. A second harness compiles the production mailbox callback
+and service code against SDK fakes. It checks 64-byte reads, 1–63-byte retry,
+write-only transactions, overflow, staging while new radio traffic arrives,
+and the optional byte-65 zero sentinel. A third compiles the actual `main.c`
+modem service against fake UART/SDK calls and checks config ACKs, UART
+backpressure, send ACK/ERR and ambiguous timeout behavior.
 
 Queues are bounded to eight frames per direction, with a separate eight-frame
 terminal-result queue. STOP and terminal results take priority. Routine IMU and
-environment samples from a sender are coalesced. When a queue contains only
-equal or higher priority traffic, a new event is rejected and the queue-drop
-counter is reported by `NODE_HEALTH`. Empty Pi reads rotate the persistent
-comms-node `NODE_HEALTH`, `HEARTBEAT` and radio `LINK_STATUS` snapshots. Pi
-`REQUEST_RESULT` frames use their own queue and are not evicted by telemetry;
-they remain queued until the modem command is staged in the UART transmit FIFO.
-The queue is finite, so more than eight unserviced terminal results is reported
-as a queue drop. Radio delivery has no application-level acknowledgement;
-after an ambiguous modem send this firmware does not retry the frame. A ground
+environment samples from a sender are coalesced. Terminal results coalesce by
+`(ground_session, request_id)` while queued so the latest state is retained for
+that request. When no lower-priority entry can be evicted, a new event is
+rejected and the queue-drop counter is reported by `NODE_HEALTH`; the finite
+terminal queue cannot retain an unbounded number of distinct results. The relay
+reserves a result slot for each queued absolute/step command and refuses further
+movement admission when queued results plus outstanding reservations reach
+capacity; STOP remains admissible and stays higher priority than telemetry.
+Empty or
+completed Pi reads rotate the persistent comms-node `NODE_HEALTH`, `HEARTBEAT`
+and radio `LINK_STATUS` snapshots. The IRQ serves a prepared 64-byte frame and
+does no MAVLink parsing or relay work. That frame stays unchanged across
+short/aborted reads and is consumed only when the 64-byte transaction finishes.
+The Pico SDK calls the callback for every `RD_REQ`; a request after byte 64 gets
+a zero sentinel. No client needs to request byte 65 to complete the fixed
+64-byte contract.
+
+The modem sends one command at a time. Each config or send command waits for
+`+OK`, `+ERR`, or a bounded timeout before advancing. Config failure leaves the
+radio unavailable until an explicit reset/reconnect. A send `+ERR` is a known
+local rejection; a send timeout is ambiguous and the popped frame is never
+replayed. `COMMS_RADIO_SEND_GAP_MS` optionally limits send cadence after a modem
+response. Radio delivery has no application-level acknowledgement; a ground
 retry reaches the Pi, where request correlation must return the cached outcome.
 
 ## Pico SDK build
