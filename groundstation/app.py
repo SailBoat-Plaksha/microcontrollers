@@ -145,7 +145,7 @@ def build_ui(ui):
     ui.page_title("Boat ground station")
     ui.colors(primary="#245b66", secondary="#53616a", accent="#9a5b22",
               positive="#376a4b", negative="#9a3d35", warning="#9a5b22")
-    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-3"):
+    with ui.column().classes("w-full min-w-0 max-w-6xl mx-auto p-4 gap-3").style("overflow-wrap: anywhere"):
         ui.label("Boat ground station").classes("text-2xl font-semibold")
         mode_badge = ui.label("DISCONNECTED · choose a transport").classes(
             "rounded px-3 py-2 bg-amber-100 text-amber-950 font-semibold")
@@ -212,7 +212,7 @@ def build_ui(ui):
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label("Packet and event log").classes("text-lg font-medium")
                 export_btn = ui.button("Export JSONL")
-            trace_text = ui.label("Waiting for events.").classes("font-mono text-xs whitespace-pre-wrap max-h-64 overflow-auto")
+            trace_text = ui.label("Waiting for events.").classes("w-full min-w-0 max-w-full font-mono text-xs whitespace-pre-wrap max-h-64 overflow-auto").style("overflow-wrap: anywhere")
 
         def refresh():
             with STATE.lock:
