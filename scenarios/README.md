@@ -48,12 +48,20 @@ an independent check still runs after a failure.
 
 ## Current result and proof limits
 
-The stale IMU regression currently fails. `onboard/router.py::_poll_imu`
-clears validity when a read fails, but there is no age check that clears
-`imu_valid_fields` when the last successful sample simply stops being polled.
-The scenario advances the injected clock by 5001 ms and records that the router
-still reports all three IMU field groups valid. This is a product-source finding
-for the onboard owner; this scenario lane only records it.
+Current full run: 10 scenarios pass; scenario 2 has one failing stale-IMU
+assertion. `onboard/router.py::_poll_imu` clears validity when a read fails,
+but there is no age check that clears `imu_valid_fields` when the last
+successful sample simply stops being polled. Reproduction: sample the configured
+IMU at injected time `10.0`, advance the injected clock to `15.001`, then inspect
+`router.imu_valid_fields`; it remains `3`. This is a product-source finding for
+the onboard owner; this scenario lane records it without modifying onboard code.
+
+The LoRa fixture drives each real Gateway configuration and send transaction
+with an explicit millisecond clock. It acknowledges configuration only after
+each UART line is fully written, acknowledges sends only after the complete
+`AT+SEND` line is written, and completes relay terminal results at the virtual
+modem acceptance boundary. Scenario 1 drains the path incrementally so both the
+terminal result and actuator status traverse the actual relay and Gateway.
 
 Host scenarios do not prove physical I2C electrical behavior, actual radio
 delivery, the physical IMU, motor/encoder motion, or RC receiver behavior.
