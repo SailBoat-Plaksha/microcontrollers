@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import struct
+import tempfile
 import unittest
+from pathlib import Path
+import queue
 
 from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_BOAT, SYSTEM_GROUND
 from protocol import codec
 
 from onboard import BoatRouter, IMURegisterConfig, ServiceConfig, SimulatedBus
+from onboard.__main__ import _enqueue_stdout
 
 
 class Clock:
@@ -39,6 +43,14 @@ def health(boot=55, feedback=1):
     }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
 
 
+def status(boot_ms=100):
+    return codec.encode("ACTUATOR_STATUS", {
+        "time_boot_ms": boot_ms, "command_id": 0, "requested_position_cdeg": 0,
+        "measured_position_cdeg": 0, "velocity_cdeg_s": 0, "fault_flags": 0,
+        "actuator": 1, "control_source": 3, "result": 0, "enabled": 0,
+    }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+
+
 class RouterTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
@@ -47,9 +59,10 @@ class RouterTests(unittest.TestCase):
         self.events = []
         self.router = BoatRouter(self.bus, clock=self.clock, on_frame=self.output.append,
                                  on_event=self.events.append)
-        self.bus.inject_frame(0x08, health(), snapshot=True)
-        self.router.step()  # establish fresh motor boot and feedback state
-        self.router.step()  # drain the forwarded snapshot into the comms mailbox
+        self.router._observe_node_message(codec.decode(health()), health())
+        self.router._observe_node_message(codec.decode(status()), status())
+        self.router._normal.clear()
+        self.router._poll_index = 1
         self.bus.operations.clear()
 
     def test_step_routes_delta_unchanged_with_pi_source_and_ground_correlation(self):
@@ -74,9 +87,7 @@ class RouterTests(unittest.TestCase):
 
     def test_step_denied_when_feedback_invalid(self):
         self.bus.inject_frame(0x08, health(feedback=0))
-        self.router.step()
-        self.router.step()
-        self.router.step()
+        self.router._poll_node(0x08)
         self.assertFalse(self.router.submit_frame(ground_request()))
         self.assertFalse(any(op.kind == "write" and op.address == 0x08 for op in self.bus.operations))
 
@@ -140,6 +151,109 @@ class RouterTests(unittest.TestCase):
         self.assertTrue(any(result["ground_session"] == 123 and result["result"] == 4
                             for result in old_results))
 
+    def test_full_queue_admits_stop_and_evicts_routine_traffic(self):
+        router = BoatRouter(self.bus, ServiceConfig(queue_limit=4), clock=self.clock,
+                            on_frame=self.output.append, on_event=self.events.append)
+        router.node_health[(SYSTEM_BOAT, COMPONENT_MOTOR)] = (self.clock(), 55, 1)
+        router.node_boot_ids[(SYSTEM_BOAT, COMPONENT_MOTOR)] = 55
+        router.motor_status_at = self.clock()
+        router.motor_reconcile_required = False
+        for frame in (status(), health(), codec.encode("LINK_STATUS", {
+                "time_boot_ms": 1, "rx_packets": 0, "tx_packets": 0,
+                "rx_errors": 0, "tx_errors": 0, "address": 0,
+                "rssi_dbm": 0, "snr_cdb": 0, "link_type": 1,
+                "connected": 1}, system=1, component=1),
+                codec.encode("SCALED_IMU", {
+                    "time_boot_ms": 1, "xacc": 0, "yacc": 0, "zacc": 0,
+                    "xgyro": 0, "ygyro": 0, "zgyro": 0, "xmag": 0,
+                    "ymag": 0, "zmag": 0, "temperature": 0}, system=1, component=1)):
+            router._queue(frame, 0x09, 2)
+        self.assertEqual(router.queued_writes, 4)
+        self.assertTrue(router.submit_frame(ground_request(request_id=1, opcode=3, delta=0)))
+        self.assertEqual(router.queued_writes, 4)
+        self.assertEqual(len(router._stops), 1)
+        router.step()
+        written = next(op for op in self.bus.operations if op.kind == "write")
+        self.assertEqual(codec.decode(router._decode_mailbox(written.data))["fields"]["opcode"], 3)
+
+    def test_boot_change_purges_queued_motion_until_health_and_status_reconcile(self):
+        self.router._normal.clear()
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, opcode=1, delta=100)))
+        changed = codec.decode(health(boot=56))
+        self.router._observe_node_message(changed, health(boot=56))
+        self.assertFalse(any(item.key and item.key[3] == 1 for item in self.router._normal))
+        self.assertTrue(self.router.motor_reconcile_required)
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=2, opcode=1, delta=100)))
+        self.router._observe_node_message(codec.decode(status(200)), status(200))
+        self.assertFalse(self.router.motor_reconcile_required)
+
+    def test_delayed_retired_session_cannot_replace_current_session(self):
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=123)))
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, session=456)))
+        current_queue = [(item.key, item.frame) for item in self.router._normal if item.key]
+        self.assertFalse(self.router.submit_frame(ground_request(request_id=2, session=123)))
+        self.assertEqual(self.router._sessions[(SYSTEM_GROUND, COMPONENT_GROUND)], 456)
+        self.assertEqual([(item.key, item.frame) for item in self.router._normal if item.key], current_queue)
+
+    def test_mismatched_motor_result_is_not_forwarded(self):
+        result = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 999, "motor_boot_id": 55,
+            "local_command_id": 1, "result": 1, "state": 4,
+            "target_system": 255, "target_component": 191,
+        }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+        before = list(self.output)
+        self.router._observe_node_message(codec.decode(result), result)
+        self.assertEqual(self.output, before)
+
+    def test_addressed_ping_reply_never_triggers_pi_ping_response(self):
+        reply = codec.encode("PING", {"time_usec": 123, "seq": 7,
+            "target_system": SYSTEM_GROUND, "target_component": COMPONENT_GROUND},
+            system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+        self.router._observe_node_message(codec.decode(reply), reply)
+        pi_responses = [frame for frame in self.output if codec.decode(frame)["name"] == "PING"
+                        and codec.decode(frame)["system"] == 1 and codec.decode(frame)["component"] == 1]
+        self.assertEqual(pi_responses, [])
+
+    def test_queued_movement_is_rejected_after_health_age_timeout(self):
+        self.router._normal.clear()
+        self.assertTrue(self.router.submit_frame(ground_request(request_id=1, opcode=1, delta=100)))
+        write = self.router._normal.pop()
+        self.clock.advance(5.1)
+        self.router._write(write)
+        motor_writes = [op for op in self.bus.operations if op.kind == "write" and op.address == 0x08]
+        self.assertEqual(motor_writes, [])
+        self.assertTrue(any(event.kind == "stale" for event in self.events))
+
+    def test_bridge_stdout_queue_is_bounded_and_prioritizes_terminal_results(self):
+        out = queue.Queue(maxsize=2)
+        telemetry = codec.encode("SCALED_IMU", {
+            "time_boot_ms": 1, "xacc": 0, "yacc": 0, "zacc": 0,
+            "xgyro": 0, "ygyro": 0, "zgyro": 0, "xmag": 0,
+            "ymag": 0, "zmag": 0, "temperature": 0}, system=1, component=1)
+        result = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 5, "motor_boot_id": 55,
+            "local_command_id": 1, "result": 1, "state": 4,
+            "target_system": 255, "target_component": 190,
+        }, system=1, component=1)
+        _enqueue_stdout(out, telemetry)
+        _enqueue_stdout(out, telemetry)
+        _enqueue_stdout(out, result)
+        self.assertEqual(out.qsize(), 2)
+        self.assertEqual(codec.decode(out.get_nowait())["name"], "REQUEST_RESULT")
+
+    def test_config_rejects_noncontract_components_and_malformed_imu_values(self):
+        with self.assertRaises(ValueError):
+            ServiceConfig(motor_component=155)
+        with self.assertRaises(ValueError):
+            IMURegisterConfig(address=0x68, register=0x3B,
+                              accel_scale_mg_per_count=float("nan"),
+                              gyro_scale_mrad_s_per_count=1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "bad.toml"
+            config.write_text("[bus]\nnumber = 'one'\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                ServiceConfig.from_toml(config)
+
     def test_motor_result_is_returned_through_comms_with_correlation(self):
         self.router.submit_frame(ground_request(opcode=3, delta=0), ingress="comms")
         # Poll past the write and an empty comms read, then provide the motor result.
@@ -163,6 +277,14 @@ class RouterTests(unittest.TestCase):
     def test_mailbox_read_fault_marks_node_absent(self):
         self.bus.inject_fault("read")
         self.router.step()  # next round-robin node is comms
+        self.assertFalse(self.router.node_present[(SYSTEM_BOAT, 158)])
+
+    def test_empty_mailbox_ack_does_not_refresh_node_frame_age(self):
+        self.router.node_last_seen.pop((SYSTEM_BOAT, 158), None)
+        self.router.node_present[(SYSTEM_BOAT, 158)] = False
+        self.router._poll_node(0x09)
+        self.assertIn((SYSTEM_BOAT, 158), self.router.node_ack_at)
+        self.assertNotIn((SYSTEM_BOAT, 158), self.router.node_last_seen)
         self.assertFalse(self.router.node_present[(SYSTEM_BOAT, 158)])
 
     def test_imu_failure_emits_fresh_invalid_health(self):

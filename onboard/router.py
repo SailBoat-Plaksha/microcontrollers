@@ -38,6 +38,8 @@ class _Write:
     frame: bytes
     priority: int
     key: tuple[int, int, int, int] | None = None
+    queued_at: float = 0.0
+    motion: bool = False
 
 
 class BoatRouter:
@@ -63,14 +65,19 @@ class BoatRouter:
         self._poll_index = 0
         self._consecutive_writes = 0
         self._sessions: dict[tuple[int, int], int] = {}
+        self._retired_sessions: deque[tuple[int, int, int]] = deque(maxlen=64)
         self._highest_request: dict[tuple[int, int, int], int] = {}
         self._requests: dict[tuple[int, int, int, int], dict[str, int | str]] = {}
         self._request_routes: dict[tuple[int, int, int, int], str] = {}
         self.snapshots: dict[tuple[int, int], dict[str, bytes]] = {}
         self.node_last_seen: dict[tuple[int, int], float] = {}
+        self.node_ack_at: dict[tuple[int, int], float] = {}
         self.node_present: dict[tuple[int, int], bool] = {}
         self.node_boot_ids: dict[tuple[int, int], int] = {}
         self.node_health: dict[tuple[int, int], tuple[float, int, int]] = {}
+        self.motor_status_at: float | None = None
+        self.motor_reconcile_required = True
+        self._motor_reference_seen = False
         self.imu_valid_fields = 0
         self.imu_last_sample: tuple[int, int, int, int, int, int] | None = None
         self.imu_last_seen: float | None = None
@@ -117,22 +124,18 @@ class BoatRouter:
                     self._queue(frame, self.config.comms_address, 1)
                 self._queue(frame, self.config.motor_address, 1)
                 return True
-            target = (fields["target_system"], fields["target_component"])
-            if target == (ids.SYSTEM_BOAT, ids.COMPONENT_PI):
-                self._queue_ping_reply(message, ingress)
-            elif target == (ids.SYSTEM_BOAT, self.config.motor_component):
-                self._queue(frame, self.config.motor_address, 1)
-            elif target == (ids.SYSTEM_BOAT, self.config.comms_component) and ingress == "ssh":
-                self._queue(frame, self.config.comms_address, 1)
-            else:
-                self._event("rejected", "PING target is not a configured node", frame)
-                return False
-            return True
+            self._event("rejected", "only broadcast PING requests are accepted", frame)
+            return False
         self._event("rejected", "ground message is not a command", frame)
         return False
 
     def step(self) -> bool:
         """Perform at most one bus operation; safe to drive with an injected clock."""
+        now = self.clock()
+        for address in (self.config.motor_address, self.config.comms_address):
+            identity = self._node_for_address(address)
+            seen = self.node_last_seen.get(identity)
+            self.node_present[identity] = seen is not None and now - seen <= 5.0
         self._emit_periodic()
         if self._stops and self._consecutive_writes < 3:
             write = self._stops.popleft()
@@ -165,6 +168,13 @@ class BoatRouter:
     def _accept_request(self, original: bytes, fields: dict[str, int], ingress: str) -> bool:
         key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, fields["ground_session"])
         request_key = (*key, fields["request_id"])
+        if fields["ground_session"] == 0 or fields["request_id"] == 0:
+            self._reject_request(fields, ingress, result=3, state=6,
+                                 reason="ground_session and request_id must be nonzero")
+            return False
+        if (*key[:2], key[2]) in self._retired_sessions:
+            self._event("session", "delayed request from a retired ground session rejected", original)
+            return False
         if (fields["target_system"], fields["target_component"]) != (ids.SYSTEM_BOAT, self.config.motor_component):
             self._reject_request(fields, ingress, result=3, state=6, reason="wrong movement target")
             return False
@@ -183,6 +193,15 @@ class BoatRouter:
                 self._reject_request(fields, ingress, result=4, state=0,
                                      reason="fresh motor health is required before movement")
                 return False
+            if self.motor_reconcile_required:
+                self._reject_request(fields, ingress, result=4, state=0,
+                                     reason="fresh motor status/reference reconciliation is required")
+                return False
+            if (not self._motor_reference_seen or self.motor_status_at is None or
+                    self.clock() - self.motor_status_at > 5.0):
+                self._reject_request(fields, ingress, result=4, state=0,
+                                     reason="motor status/reference is stale")
+                return False
             if fields["opcode"] == 2 and not health[2]:
                 self._reject_request(fields, ingress, result=3, state=6,
                                      reason="motor feedback is not marked valid; STEP not forwarded")
@@ -193,6 +212,11 @@ class BoatRouter:
             return True
         current_session = self._sessions.get(key[:2])
         if current_session is not None and current_session != fields["ground_session"]:
+            if len(self._retired_sessions) == self._retired_sessions.maxlen:
+                self._reject_request(fields, ingress, result=4, state=6,
+                                     reason="session rotation limit reached; restart router to clear replay guard")
+                return False
+            self._retired_sessions.append((*key[:2], current_session))
             kept_normal, kept_stops, queued_keys = deque(), deque(), set()
             for queue, kept in ((self._normal, kept_normal), (self._stops, kept_stops)):
                 while queue:
@@ -206,32 +230,44 @@ class BoatRouter:
                 if (old_key[:2] == key[:2] and old_key[2] == current_session and
                         int(old_record.get("state", 0)) not in TERMINAL_STATES):
                     if old_key in queued_keys:
-                        self._make_result(old_key, 0, 0, 4, 6,
+                        self._make_result(old_key, self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0), 0, 4, 6,
                                           "session changed before bus write; request marked stale")
                     else:
-                        self._make_result(old_key, 0, 0, 0, 0,
+                        self._make_result(old_key, self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0), 0, 0, 0,
                                           "session changed after bus write; outcome unknown")
             self._event("session", "ground session changed; old requests marked unknown")
+            self._highest_request.pop((*key[:2], current_session), None)
         self._sessions[key[:2]] = fields["ground_session"]
         high_key = (*key[:2], fields["ground_session"])
         previous = self._highest_request.get(high_key, 0)
         if fields["request_id"] <= previous:
             self._reject_request(fields, ingress, result=4, state=6, reason="reordered or stale request ID")
             return False
-        if self.queued_writes >= self.config.queue_limit:
+        is_stop = fields["opcode"] == 3
+        if (is_stop and self.queued_writes >= self.config.queue_limit and
+                not any(item.priority >= 2 for item in self._normal) and not self._stops):
+            self._reject_request(fields, ingress, result=0, state=0,
+                                 reason="STOP cannot displace protected status or response traffic")
+            return False
+        if not is_stop and self.queued_writes >= self.config.queue_limit:
             self.queue_drops += 1
             self._reject_request(fields, ingress, result=0, state=0, reason="bounded write queue is full")
             return False
+        self._prune_ledgers()
+        if len(self._requests) >= max(16, self.config.queue_limit * 4):
+            self._reject_request(fields, ingress, result=0, state=0,
+                                 reason="bounded request ledger is full")
+            return False
         self._highest_request[high_key] = fields["request_id"]
-        self._requests[request_key] = dict(fields)
-        self._request_routes[request_key] = ingress
+        self._remember_request(request_key, fields, ingress)
         # Rewrite only the MAVLink source header. The STEP delta and correlation payload
         # reach the motor unchanged, where STEP is resolved exactly once.
         local = bytearray(original)
         local[5], local[6] = ids.SYSTEM_BOAT, ids.COMPONENT_PI
         self._refresh_crc(local)
-        priority = 0 if fields["opcode"] == 3 else 2
-        self._queue(bytes(local), self.config.motor_address, priority, request_key)
+        priority = 0 if is_stop else 2
+        self._queue(bytes(local), self.config.motor_address, priority, request_key,
+                    motion=True)
         motor_boot = self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0)
         self._make_result(request_key, motor_boot, 0, 0, 1, "request received; motor processing is pending")
         self._event("routed", "ground request queued for motor", bytes(local), (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
@@ -240,27 +276,55 @@ class BoatRouter:
     def _reject_request(self, fields: dict[str, int], route: str, *, result: int,
                         state: int, reason: str) -> None:
         key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, fields["ground_session"], fields["request_id"])
+        if key in self._requests:
+            self._event("duplicate", "rejected frame reused a correlated request ID; saved result retained")
+            self._send_saved_result(key, route)
+            return
+        self._prune_ledgers()
+        if len(self._requests) < max(16, self.config.queue_limit * 4):
+            self._remember_request(key, fields, route)
+        boot = self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0)
+        self._make_result(key, boot, 0, result, state, reason, route=route)
+
+    def _remember_request(self, key, fields, route):
         self._requests[key] = dict(fields)
         self._request_routes[key] = route
-        self._make_result(key, 0, 0, result, state, reason)
+
+    def _prune_ledgers(self) -> None:
+        limit = max(16, self.config.queue_limit * 4)
+        if len(self._requests) < limit:
+            return
+        queued = {item.key for item in (*self._normal, *self._stops) if item.key is not None}
+        for key, record in list(self._requests.items()):
+            if int(record.get("state", 0)) in TERMINAL_STATES and key not in queued:
+                self._requests.pop(key, None)
+                self._request_routes.pop(key, None)
+                if len(self._requests) < limit:
+                    return
 
     def _make_result(self, key: tuple[int, int, int, int], boot: int, command: int,
-                     result: int, state: int, reason: str) -> bytes:
+                     result: int, state: int, reason: str, *, enqueue: bool = True,
+                     route: str | None = None) -> bytes:
         frame = codec.encode("REQUEST_RESULT", {
             "ground_session": key[2], "request_id": key[3], "motor_boot_id": boot,
             "local_command_id": command, "result": result, "state": state,
             "target_system": key[0], "target_component": key[1]},
             system=ids.SYSTEM_BOAT, component=ids.COMPONENT_PI, sequence=self._next_sequence())
-        record = self._requests.setdefault(key, {})
-        record.update(result=result, state=state, motor_boot_id=boot,
-                      local_command_id=command, result_frame=frame)
-        self._route_result(key, frame)
+        record = self._requests.get(key)
+        if record is not None:
+            record.update(result=result, state=state, motor_boot_id=boot,
+                          local_command_id=command, result_frame=frame)
+        if enqueue:
+            self._route_result(key, frame, route=route)
+        elif route == "ssh" or (route is None and self._request_routes.get(key) == "ssh"):
+            self.on_frame(frame)
         self._event("request_result", reason, frame, (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
         return frame
 
-    def _route_result(self, key: tuple[int, int, int, int], frame: bytes) -> None:
-        if self._request_routes.get(key) == "comms":
-            self._queue(frame, self.config.comms_address, 1)
+    def _route_result(self, key: tuple[int, int, int, int], frame: bytes,
+                      *, route: str | None = None) -> None:
+        if route == "comms" or (route is None and self._request_routes.get(key) == "comms"):
+            self._queue(frame, self.config.comms_address, 1, key)
         else:
             self.on_frame(frame)
 
@@ -269,12 +333,13 @@ class BoatRouter:
         frame = record.get("result_frame")
         if isinstance(frame, bytes):
             if ingress == "comms":
-                self._queue(frame, self.config.comms_address, 1)
+                self._queue(frame, self.config.comms_address, 1, key)
             else:
                 self.on_frame(frame)
 
     def _queue(self, frame: bytes, address: int, priority: int,
-               key: tuple[int, int, int, int] | None = None) -> None:
+               key: tuple[int, int, int, int] | None = None, *,
+               motion: bool = False) -> None:
         try:
             codec.decode(frame)
         except ValueError as exc:
@@ -283,21 +348,26 @@ class BoatRouter:
         if len(frame) > ids.MAILBOX_FRAME:
             self._event("rejected", "outgoing frame exceeds 64-byte mailbox", frame)
             return
-        entry = _Write(address, bytes(frame), priority, key)
+        entry = _Write(address, bytes(frame), priority, key, self.clock(), motion)
         if priority == 0:
-            if len(self._stops) >= self.config.queue_limit:
+            while len(self._normal) + len(self._stops) >= self.config.queue_limit:
+                routine = next((i for i in range(len(self._normal) - 1, -1, -1)
+                                if self._normal[i].priority >= 2), None)
+                if routine is None:
+                    break
+                dropped = self._normal[routine]
+                del self._normal[routine]
+                self._discard_queued(dropped, "queued frame removed to prioritize STOP")
+            if len(self._normal) + len(self._stops) >= self.config.queue_limit and self._stops:
                 replaced = self._stops.popleft()
                 if replaced.key is not None:
-                    self._make_result(replaced.key, 0, 0, 5, 6,
-                                      "queued STOP superseded by a newer STOP")
-            while len(self._normal) + len(self._stops) >= self.config.queue_limit and self._normal:
-                dropped = self._normal.popleft()
-                if dropped.key is not None:
-                    self._make_result(dropped.key, 0, 0, 4, 6,
-                                      "queued movement removed to prioritize STOP")
-                else:
-                    self.queue_drops += 1
-                    self._event("queue_drop", "routine frame removed to prioritize STOP", dropped.frame)
+                    self._make_result(replaced.key,
+                                      self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0),
+                                      0, 5, 6, "queued STOP superseded by a newer STOP", enqueue=False)
+            if len(self._normal) + len(self._stops) >= self.config.queue_limit:
+                self.queue_drops += 1
+                self._event("queue_drop", "STOP queue is full of protected traffic", frame)
+                return
             self._stops.append(entry)
         else:
             if frame[0] == codec.MAGIC:
@@ -305,22 +375,86 @@ class BoatRouter:
                     message_name = codec.decode(frame)["name"]
                 except ValueError:
                     message_name = ""
-                if message_name in ("HEARTBEAT", "NODE_HEALTH", "SCALED_IMU"):
+                if message_name in ("HEARTBEAT", "NODE_HEALTH", "SCALED_IMU",
+                                    "ACTUATOR_STATUS", "LINK_STATUS"):
                     for index, pending in enumerate(self._normal):
                         if pending.address == address:
                             try:
-                                if codec.decode(pending.frame)["name"] == message_name:
+                                if self._queue_identity(pending.frame) == self._queue_identity(frame):
                                     self._normal[index] = entry
                                     return
                             except ValueError:
                                 pass
             if len(self._normal) + len(self._stops) >= self.config.queue_limit:
-                self.queue_drops += 1
-                self._event("queue_drop", "bounded write queue full", frame)
-                return
-            self._normal.append(entry)
+                if priority < 2:
+                    index = next((i for i in range(len(self._normal) - 1, -1, -1)
+                                  if self._normal[i].priority >= 2), None)
+                    if index is not None:
+                        dropped = self._normal[index]
+                        del self._normal[index]
+                        self._discard_queued(dropped,
+                                             "routine frame removed for protected status or response")
+                    else:
+                        # Replace an older snapshot for the same message, or
+                        # the previous state of the same correlated request.
+                        replace = next((i for i, pending in enumerate(self._normal)
+                                        if pending.address == address and
+                                        (pending.key == key if key is not None else
+                                         self._queue_identity(pending.frame) == self._queue_identity(frame))), None)
+                        if replace is not None:
+                            self._normal.pop(replace)
+                        else:
+                            self.queue_drops += 1
+                            self._event("queue_drop", "protected queue full; no matching snapshot to coalesce", frame)
+                            return
+                else:
+                    self.queue_drops += 1
+                    self._event("queue_drop", "routine frame evicted or rejected because bounded write queue is full", frame)
+                    return
+            index = next((i for i, pending in enumerate(self._normal)
+                          if pending.priority > priority), len(self._normal))
+            self._normal.insert(index, entry)
+
+    @staticmethod
+    def _queue_identity(frame: bytes) -> tuple:
+        message = codec.decode(frame)
+        name = message["name"]
+        fields = message["fields"]
+        suffix = ()
+        if name == "ACTUATOR_STATUS":
+            suffix = (fields["actuator"],)
+        elif name == "LINK_STATUS":
+            suffix = (fields["link_type"],)
+        elif name == "REQUEST_RESULT":
+            suffix = (fields["ground_session"], fields["request_id"])
+        return name, message["system"], message["component"], *suffix
+
+    def _discard_queued(self, dropped: _Write, reason: str) -> None:
+        if dropped.key is not None and dropped.motion:
+            self._make_result(dropped.key,
+                              self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0),
+                              0, 4, 6, reason, enqueue=False)
+        else:
+            self.queue_drops += 1
+            self._event("queue_drop", reason, dropped.frame)
 
     def _write(self, write: _Write) -> bool:
+        if write.key is not None and write.motion:
+            record = self._requests.get(write.key, {})
+            if record.get("opcode") != 3:
+                now = self.clock()
+                health = self.node_health.get((ids.SYSTEM_BOAT, self.config.motor_component))
+                if (now - write.queued_at > 5.0 or health is None or now - health[0] > 5.0 or
+                        self.motor_reconcile_required or
+                        self.motor_status_at is None or now - self.motor_status_at > 5.0 or
+                        (record.get("opcode") == 2 and not health[2])):
+                    boot = self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0)
+                    self._make_result(write.key, boot, 0, 4, 0,
+                                      "movement readiness or queue freshness expired before write",
+                                      enqueue=False)
+                    self._event("stale", "queued movement removed before bus write", write.frame)
+                    self._consecutive_writes += 1
+                    return False
         mailbox = write.frame.ljust(ids.MAILBOX_FRAME, b"\0")
         try:
             self.bus.write_mailbox(write.address, mailbox)
@@ -328,12 +462,16 @@ class BoatRouter:
             self.bus_errors += 1
             self.node_present[self._node_for_address(write.address)] = False
             self._event("bus_error", f"ambiguous write at 0x{write.address:02x}: {exc}; not retried", write.frame)
-            if write.key is not None:
-                self._make_result(write.key, 0, 0, 0, 0, "ambiguous motor write; outcome unknown, not retried")
+            if write.key is not None and write.motion:
+                boot = self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0)
+                self._make_result(write.key, boot, 0, 0, 0,
+                                  "ambiguous motor write; outcome unknown, inspect status before motion")
+                if write.address == self.config.motor_address:
+                    self.motor_reconcile_required = True
             self._consecutive_writes += 1
             return False
         self._consecutive_writes += 1
-        if write.key is not None:
+        if write.key is not None and write.motion:
             record = self._requests.get(write.key)
             if record is not None:
                 record["write_complete"] = 1
@@ -344,16 +482,17 @@ class BoatRouter:
         node = self._node_for_address(address)
         try:
             mailbox = self.bus.read_mailbox(address)
+            if not isinstance(mailbox, (bytes, bytearray)):
+                raise OSError("mailbox read did not return bytes")
             if len(mailbox) != ids.MAILBOX_FRAME:
                 raise OSError(f"mailbox read length {len(mailbox)} != 64")
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             self.bus_errors += 1
             self.node_present[node] = False
             self._event("bus_error", f"read failed at 0x{address:02x}: {exc}")
             self._consecutive_writes = 0
             return False
-        self.node_present[node] = True
-        self.node_last_seen[node] = self.clock()
+        self.node_ack_at[node] = self.clock()
         self._consecutive_writes = 0
         if not any(mailbox):
             self._event("poll", f"empty mailbox from {node[0]}/{node[1]}")
@@ -361,7 +500,7 @@ class BoatRouter:
         try:
             frame = self._decode_mailbox(mailbox)
             message = codec.decode(frame)
-        except ValueError as exc:
+        except (ValueError, TypeError, struct.error) as exc:
             self.bus_errors += 1
             self._event("rejected", f"invalid mailbox from {node[0]}/{node[1]}: {exc}")
             return False
@@ -373,6 +512,8 @@ class BoatRouter:
         if ground_request:
             self.submit_frame(frame, ingress="comms")
             return True
+        self.node_last_seen[node] = self.clock()
+        self.node_present[node] = True
         self._observe_node_message(message, frame)
         return True
 
@@ -388,38 +529,70 @@ class BoatRouter:
             prior = self.node_boot_ids.get(source)
             boot = fields["boot_id"]
             if prior is not None and prior != boot:
-                self._unknown_pending_for_boot(source, "motor boot changed; prior request outcome unknown")
+                self._unknown_pending_for_boot(source, "motor boot changed; prior request outcome unknown", boot)
+                self.motor_reconcile_required = True
+                self._motor_reference_seen = False
             self.node_boot_ids[source] = boot
             self.node_health[source] = (now, boot, fields["feedback_valid"])
+            if (source[1] == self.config.motor_component and self._motor_reference_seen and
+                    self.motor_status_at is not None and now - self.motor_status_at <= 5.0):
+                self.motor_reconcile_required = False
+        elif name == "ACTUATOR_STATUS" and source[1] == self.config.motor_component:
+            self.motor_status_at = now
+            self._motor_reference_seen = True
+            health = self.node_health.get(source)
+            if health is not None and now - health[0] <= 5.0:
+                self.motor_reconcile_required = False
         elif name == "REQUEST_RESULT":
+            if source != (ids.SYSTEM_BOAT, self.config.motor_component):
+                self._event("rejected", "REQUEST_RESULT source is not the configured motor", frame, source)
+                return
             request_key = (fields["target_system"], fields["target_component"],
                            fields["ground_session"], fields["request_id"])
+            previous_boot = self.node_boot_ids.get(source)
+            if ((fields["target_system"], fields["target_component"]) !=
+                    (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND) or
+                    (previous_boot is not None and fields["motor_boot_id"] != previous_boot)):
+                self._event("rejected", "motor result target or boot does not match current request context", frame, source)
+                return
             if request_key in self._requests:
-                previous_boot = self.node_boot_ids.get(source)
-                if previous_boot is not None and fields["motor_boot_id"] != previous_boot:
-                    self._make_result(request_key, 0, 0, 0, 0, "motor boot changed; request outcome unknown")
-                else:
-                    record = self._requests[request_key]
-                    record.update(result=fields["result"], state=fields["state"],
-                                  motor_boot_id=fields["motor_boot_id"],
-                                  local_command_id=fields["local_command_id"], result_frame=frame)
-                    self._route_result(request_key, frame)
-            elif (fields["target_system"], fields["target_component"]) == (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND):
+                record = self._requests[request_key]
+                record.update(result=fields["result"], state=fields["state"],
+                              motor_boot_id=fields["motor_boot_id"],
+                              local_command_id=fields["local_command_id"], result_frame=frame)
+                self._route_result(request_key, frame)
+            else:
                 # A Pi restart may have lost its in-memory ledger; return the motor's
                 # correlated observation so the ground client can match its session.
-                self._queue(frame, self.config.comms_address, 1)
+                if self._request_routes.get(request_key) == "comms":
+                    self._queue(frame, self.config.comms_address, 1)
+                else:
+                    self.on_frame(frame)
+            self.snapshots.setdefault(source, {})[name] = bytes(frame)
+            self._event("frame", "forwarded REQUEST_RESULT from motor", frame, source)
+            return
         self.snapshots.setdefault(source, {})[name] = bytes(frame)
         self.on_frame(frame)
         if source[1] == self.config.motor_component and name != "REQUEST_RESULT":
             self._queue(frame, self.config.comms_address, 1)
         self._event("frame", f"forwarded {name} from {source[0]}/{source[1]}", frame, source)
 
-    def _unknown_pending_for_boot(self, source: tuple[int, int], reason: str) -> None:
+    def _unknown_pending_for_boot(self, source: tuple[int, int], reason: str, new_boot: int) -> None:
         if source[1] != ids.COMPONENT_MOTOR:
             return
+        kept = deque()
+        for item in self._normal:
+            if item.address == self.config.motor_address and item.key is not None:
+                record = self._requests.get(item.key, {})
+                if record.get("opcode") in (1, 2, 3):
+                    continue
+            kept.append(item)
+        self._normal = kept
+        self._stops = deque(item for item in self._stops if item.address != self.config.motor_address)
         for key, record in list(self._requests.items()):
             if int(record.get("state", 0)) not in TERMINAL_STATES:
-                self._make_result(key, 0, int(record.get("local_command_id", 0)), 0, 0, reason)
+                self._make_result(key, new_boot,
+                                  int(record.get("local_command_id", 0)), 0, 0, reason)
 
     def _poll_imu(self) -> bool:
         cfg = self.config.imu
@@ -450,7 +623,7 @@ class BoatRouter:
             self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False) else "IMU register sample", frame, (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
             self._emit_health()
             return True
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, OverflowError, struct.error) as exc:
             self.bus_errors += 1
             self.imu_last_sample = None
             self.imu_last_seen = None
