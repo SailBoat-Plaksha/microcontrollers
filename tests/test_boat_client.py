@@ -206,7 +206,7 @@ class BoatClientTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "fresh motor health and status"):
             self.client.step(1, 10)
 
-    def test_motor_readiness_expires_and_checks_feedback_enabled_and_busy(self):
+    def test_motor_readiness_expires_and_allows_stopped_output(self):
         self.transport.reconcile_motor(self.client)
         self.transport.receive("NODE_HEALTH", dict(boot_id=7, time_boot_ms=2,
             fault_flags=0, sensor_valid_fields=0, queue_drops=0,
@@ -220,13 +220,12 @@ class BoatClientTests(unittest.TestCase):
             command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
             velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
             result=0, enabled=0), system=1, component=154)
-        with self.assertRaisesRegex(RuntimeError, "output is disabled"):
-            self.client.step(1, 10)
+        self.assertEqual(self.client.step(1, 10).request_id, 1)
         self.transport.receive("ACTUATOR_STATUS", dict(time_boot_ms=4,
             command_id=0, requested_position_cdeg=0, measured_position_cdeg=0,
             velocity_cdeg_s=0, fault_flags=0, actuator=1, control_source=0,
             result=0, enabled=1), system=1, component=154)
-        self.assertEqual(self.client.step(1, 10).request_id, 1)
+        self.assertEqual(self.client.step(1, 10).request_id, 2)
         self.now += self.client._motor_freshness_s + 0.01
         with self.assertRaisesRegex(RuntimeError, "fresh motor health and status"):
             self.client.step(1, 10)
@@ -351,6 +350,7 @@ class BoatClientTests(unittest.TestCase):
         self.assertEqual(len(outcomes), 1)
         self.assertEqual((outcomes[0].request_id, outcomes[0].result, outcomes[0].state),
                          (1, 0, 0))
+        self.assertEqual(outcomes[0].motor_boot_id, 7)
         self.assertTrue(any(isinstance(event, TransportEvent) and event.state == "error"
                             for event in self.events))
         self.assertFalse(self.transport.opened)

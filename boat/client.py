@@ -214,11 +214,12 @@ class BoatClient:
             self._opening_generation = None
             self._opening_frames = []
             tickets = tuple(self._pending_tickets.values())
+            motor_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR), 0)
             self._clear_connection_state(emit_unknown=False, session=session)
             close_error = self._safe_close()
             for ticket in tickets:
                 if ticket.ground_session == session:
-                    self._publish_unknown(ticket)
+                    self._publish_unknown(ticket, motor_boot)
             if close_error is not None:
                 self._publish(TransportEvent("error", f"close failed: {close_error}"))
             self._publish(TransportEvent("disconnected", self.transport.name))
@@ -317,8 +318,6 @@ class BoatClient:
             raise RuntimeError("fresh motor health and status are required before movement")
         if not self._motor_feedback_valid:
             raise RuntimeError("fresh valid motor feedback is required before movement")
-        if not self._motor_enabled:
-            raise RuntimeError("motor output is disabled")
         if self._motor_busy:
             raise RuntimeError("motor is busy")
 
@@ -501,12 +500,14 @@ class BoatClient:
         if source not in ((SYSTEM_BOAT, COMPONENT_PI), (SYSTEM_BOAT, COMPONENT_MOTOR)):
             return
         for ticket in tuple(self._pending_tickets.values()):
-            self._publish_unknown(ticket, old_boot, source)
+            self._publish_unknown(ticket, source=source)
             self._discard_ticket(ticket)
         self._seen_outcomes.clear()
 
-    def _publish_unknown(self, ticket: RequestTicket, boot_id: int = 0,
+    def _publish_unknown(self, ticket: RequestTicket, boot_id: int | None = None,
                          source: tuple[int, int] | None = None) -> None:
+        if boot_id is None:
+            boot_id = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR), 0)
         self._publish(RequestOutcome(ticket.ground_session, ticket.request_id,
                                      boot_id, 0, self._RESULT_UNKNOWN,
                                      self._STATE_UNKNOWN, self.system, self.component,
@@ -526,6 +527,7 @@ class BoatClient:
     def _clear_connection_state(self, *, emit_unknown: bool,
                                 session: int | None = None) -> None:
         tickets = tuple(self._pending_tickets.values())
+        motor_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR), 0)
         self._last_seen.clear()
         self._sensor_valid_fields.clear()
         self._boot_ids.clear()
@@ -546,7 +548,7 @@ class BoatClient:
         if emit_unknown:
             for ticket in tickets:
                 if session is None or ticket.ground_session == session:
-                    self._publish_unknown(ticket)
+                    self._publish_unknown(ticket, motor_boot)
 
     def _fail_transport(self, exc: Exception, *,
                         affected: tuple[RequestTicket, ...] = ()) -> None:
@@ -556,9 +558,10 @@ class BoatClient:
                     for ticket in self._pending_tickets.values() }
         tickets.update({(ticket.ground_session, ticket.request_id): ticket
                         for ticket in affected})
+        motor_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR), 0)
         self._clear_connection_state(emit_unknown=False)
         for ticket in tickets.values():
-            self._publish_unknown(ticket)
+            self._publish_unknown(ticket, motor_boot)
         self._safe_close()
         self._publish(TransportEvent("error", f"send failed; movement outcome unknown: {exc}"))
         if session is not None:
