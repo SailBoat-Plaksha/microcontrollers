@@ -72,3 +72,9 @@ int32_t scenario_motor_measured(void *p, int i) { return p && i>=0 && i<2 ? ((sc
 unsigned scenario_motor_drives(void *p, int i) { return p && i>=0 && i<2 ? ((scenario_motor_t*)p)->drive_calls[i] : 0; }
 uint32_t scenario_motor_boot(void *p) { return p ? ((scenario_motor_t*)p)->adapter.boot_id : 0; }
 unsigned scenario_motor_rx_errors(void *p) { return p ? ((scenario_motor_t*)p)->adapter.rx_errors : 0; }
+void scenario_motor_set_reference(void *p, int slot, int valid) {
+  if (p && slot >= 0 && slot < 2) ((scenario_motor_t *)p)->adapter.config[slot].reference_valid = valid != 0;
+}
+void scenario_motor_set_next_command(void *p, uint32_t next) {
+  if (p) ((scenario_motor_t *)p)->adapter.next_command_id = next;
+}

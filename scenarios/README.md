@@ -6,65 +6,67 @@ Run from the repository root:
 python3 -m scenarios.run
 ```
 
-The runner writes `scenarios/results/results.json`, `junit.xml` and `trace.jsonl`.
-Use `--json`, `--junit` and `--trace` to choose other output paths. Any `FAIL` or
-`PENDING` scenario returns exit status 1. A scenario is `PASS` only when every
-requirement assigned to that scenario is exercised. Passing checks in an
-incomplete scenario are retained as granular evidence.
+The runner writes `scenarios/results/results.json`, `junit.xml` and
+`trace.jsonl`. Use `--json`, `--junit` and `--trace` for other paths. Any
+`FAIL` or `PENDING` scenario returns exit status 1. Each scenario is `PASS` only
+when its assigned requirements pass. Assertions are separate report checks so
+an independent check still runs after a failure.
 
-## Integrated driver
+## Production paths exercised
 
-The driver compiles `motor-mcu/adapter.c` with `scenarios/motor_ctypes.c` into a
-temporary shared library. A controlled monotonic clock, independent encoder
-counts, feedback-valid flags, injected RC ownership and output callbacks cross
-that thin wrapper. It connects the production `BoatClient` to the production
-`BoatRouter` and an `I2CBus` whose motor endpoint is the compiled adapter. It
-does not implement movement, routing, queueing, mailbox parsing or response
-correlation.
+- **SSH:** the production `SSHTransport` argv and pipe threads run against an
+  OS-pipe process facade. The facade calls the real `onboard._run_bridge` in a
+  local worker thread and uses the compiled motor adapter as its I2C endpoint.
+  Stdout is fragmented into five-byte writes; stderr remains a separate log
+  stream. It does not open SSH or a network connection.
+- **LoRa:** the production ground `Gateway` processes USB MAVLink, emits its
+  actual `AT+SEND` envelope, and receives real C `modem.c`/`relay.c` processing
+  through ctypes. The Pi `BoatRouter` and compiled motor adapter process the
+  mailbox traffic. The modem `+RCV` lines are injected only at the virtual radio
+  boundary. Actual return frames pass back through the C relay/modem and ground
+  Gateway. No parser, router or motion logic is reimplemented in the fixture.
+- **Motor:** `motor-mcu/adapter.c` is compiled with `scenarios/motor_ctypes.c`.
+  Counts, feedback-valid flags, RC ownership and monotonic time are injected
+  independently of requested motion; output assertions read the compiled
+  adapter callbacks.
 
-Other checks cover `protocol.codec`, generated C dialect serialization,
-fragmented frame parsing, the 64-byte mailbox contract and the RYLR998 envelope
-format. Those byte/envelope fixtures do not establish that the real firmware
-radio relay works. `CapturingTransport` checks isolated client behavior only.
+## Coverage
 
-Current integrated evidence includes the client/router/compiled-motor absolute
-route and correlated completion; independently injected measured feedback;
-Pi-owned IMU register reads and unit conversion; one actual motor ping reply;
-invalid request guards; STEP resolution and duplicate suppression; ambiguous
-write UNKNOWN/no replay; STOP queue priority; the compiled adapter's local
-deadline; and adapter output yield under injected RC ownership.
-
-## Remaining checks
-
-| Scenario | Still required before full scenario PASS |
+| Scenario | Host evidence |
 | --- | --- |
-| 1 | Production SSH stdio process and full LoRa ground gateway/comms relay paths. |
-| 2 | Stale-sample/deadline behavior and IMU delivery through both production routes. |
-| 3 | Real comms responder and one reply per live node with no reply loops. |
-| 4 | Signed and unsupported frames through the complete Pi-to-motor route. |
-| 5 | Reorder/rollover, busy clients, session reset, invalid reference and stale feedback cases. |
-| 7 | Bus drops, short reads, modem faults and recovery across both routes. |
-| 8 | Actual Pi/motor/comms boot changes and pending-request invalidation. |
-| 9 | Missing peer, stale IMU and queue-overflow isolation while healthy peers continue. |
-| 11 | Saturated production queues, STOP/status/health priority and fair node polling. |
+| 1 | Correlated move and measured completion through the full LoRa path; actual `SSHTransport` stdio through `_run_bridge`; stdout fragmentation and stderr separation. |
+| 2 | Pi IMU register acquisition, mg/mrad/s values, validity and read-error propagation through LoRa and SSH; stale-sample expiry assertion. |
+| 3 | One matched ping reply from Pi, motor and comms for a single broadcast; addressed replies do not create relay reply storms. |
+| 4 | Signed and damaged frames rejected by the relay; unsupported message, wrong target, source and authority rejected before motor output. |
+| 5 | STEP resolution, exact duplicate and reordered suppression, invalid reference, stale feedback, busy second session, concurrent router client and request/command-ID wrap protection. |
+| 6 | STOP queue priority and independent compiled-motor local deadline. |
+| 7 | Ambiguous client and bus writes become UNKNOWN without replay; truncated mailbox read; fragmented/malformed modem input and subsequent recovery. |
+| 8 | Motor boot change makes pending result UNKNOWN and retires its ground session; queued old-boot motion is removed; reconnect sends no old movement. Router and comms relay recreation use new boot identities. |
+| 9 | Missing comms peer does not block healthy motor polls; IMU read failure clears sensor validity. |
+| 10 | Compiled adapter yields autonomous output after injected RC ownership. |
+| 11 | Saturated Pi and comms queues retain STOP priority; router writes stay within three consecutive operations and poll both peers. |
 
-Scenarios 6 and 10 are complete for their host requirements. Scenario 10 injects
-RC ownership through the compiled adapter callback; physical receiver and
-protected-loop behavior remain hardware/regression checks outside this host
-scenario.
+## Current result and proof limits
 
-No browser work is included; scenario 12 belongs to the parent. The runner does
-not open serial/USB/SSH ports, connect to live I2C, transmit radio packets or
-energize physical motors.
+The stale IMU regression currently fails. `onboard/router.py::_poll_imu`
+clears validity when a read fails, but there is no age check that clears
+`imu_valid_fields` when the last successful sample simply stops being polled.
+The scenario advances the injected clock by 5001 ms and records that the router
+still reports all three IMU field groups valid. This is a product-source finding
+for the onboard owner; this scenario lane only records it.
 
-## Assertion and trace rules
+Host scenarios do not prove physical I2C electrical behavior, actual radio
+delivery, the physical IMU, motor/encoder motion, or RC receiver behavior.
+Scenarios 6 and 10 cover their stated host behavior only. No USB, serial, SSH,
+live I2C, over-air radio or motor ports are opened.
 
-- Contract identities, opcodes, target IDs, 64-byte transfers and bounds come
-  from `docs/contract.md`.
-- Expected correlation, IMU units and validity are asserted from injected
-  requests and observed production frames/state.
-- Generated-C frames are decoded with `protocol.codec`.
-- Traces record raw frames, monotonic time, request/session/node boot identity,
-  bus operations, injected feedback and observed motor output/status.
-- Motor energization is asserted from compiled adapter output callbacks. Encoder
-  counts are injected independently from requested targets.
+## Trace and deterministic report rules
+
+- Frames, mailbox operations, source identity, request/session/boot IDs and
+  observed motor output come from exercised code or explicit fixture inputs.
+- A fixture may add framing only at a physical boundary, such as the virtual
+  modem's `+RCV` envelope. It does not fabricate a successful router or motor
+  response.
+- Fixed boot/session generators and stable frame/trace ordering keep tracked
+  JSON, JUnit and JSONL reports unchanged across reruns.
+- Unsupported hardware and over-air claims remain outside this host suite.
