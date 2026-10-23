@@ -535,9 +535,9 @@ def run_lora_imu_units_error():
         assert tuple(sample[k] for k in ("xacc","yacc","zacc"))==(12,-34,1000)
         assert tuple(sample[k] for k in ("xgyro","ygyro","zgyro"))==(7,-8,9)
         assert pi_health and pi_health[-1]["fields"]["sensor_valid_fields"]==3
-        # Fail the actual register read once. The next Pi-owned poll must clear
-        # validity and report the fault through the same radio path.
-        rig.rig.bus.faults["imu"]=1
+        # Keep register reads unavailable until invalid health crosses the
+        # bounded radio queues; a single failed read may recover before then.
+        rig.rig.bus.faults["imu"]=100
         rig.rig.clock.advance(25)
         assert not rig.rig.router._poll_imu()
         fault_frames=[]
@@ -549,10 +549,22 @@ def run_lora_imu_units_error():
                       codec.decode(frame)["component"]==1]
         assert fault_health and fault_health[-1]["fields"]["sensor_valid_fields"]==0
         assert fault_health[-1]["fields"]["fault_flags"] & 2
+        rig.rig.bus.faults["imu"]=0
+        assert rig.rig.router._poll_imu()
+        recovered_frames=[]
+        for _ in range(20):
+            rig.rig.transport.pump(1)
+            recovered_frames.extend(rig.pi_to_gateway_usb())
+        recovered_health=[codec.decode(frame) for frame,_ in recovered_frames
+                          if codec.decode(frame)["name"]=="NODE_HEALTH" and
+                          codec.decode(frame)["component"]==1]
+        assert recovered_health and recovered_health[-1]["fields"]["sensor_valid_fields"]==3
+        assert recovered_health[-1]["fields"]["fault_flags"]==0
         return {"sample_fields":{k:sample[k] for k in
                     ("xacc","yacc","zacc","xgyro","ygyro","zgyro")},
                 "valid_fields":3,"fault_valid_fields":fault_health[-1]["fields"]["sensor_valid_fields"],
                 "fault_flags":fault_health[-1]["fields"]["fault_flags"],
+                "recovered_valid_fields":recovered_health[-1]["fields"]["sensor_valid_fields"],
                 "trace":rig.trace[-30:]}
     finally: rig.cleanup()
 
