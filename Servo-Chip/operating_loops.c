@@ -27,6 +27,9 @@
 #include "actuator_command.h"
 
 #include "include/operating_loops.h"
+#ifdef BOAT_MIDSEM_DEMO
+#include "../motor-mcu/pico_mailbox.h"
+#endif
 
 /* ---- Pins and Flags ----*/
 
@@ -59,6 +62,7 @@ static void report_setpoint(const uint8_t *command, uint8_t result) {
   for (size_t i = 0; i < length; ++i) putchar_raw(frame[i]);
 }
 
+#ifndef BOAT_MIDSEM_DEMO
 static void service_mavlink(void) {
   uint8_t frame[MAV_FRAME_MAX];
   size_t length = 0;
@@ -80,6 +84,10 @@ static void service_mavlink(void) {
     standby(true);
   }
 }
+#else
+/* The integrated demo accepts commands only through the I2C mailbox adapter. */
+static void service_mavlink(void) { motor_mcu_service(); }
+#endif
 
 /* ---- Idling Loop ---- */
 void idling_loop(void) {
