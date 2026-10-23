@@ -61,6 +61,23 @@ def _request(client: BoatClient, transport: CapturingTransport) -> tuple[Request
     return ticket, codec.decode(transport.sent[-1])
 
 
+def _reconcile_motor(client: BoatClient, transport: CapturingTransport,
+                     events: list[object]) -> tuple[bytes, bytes]:
+    """Supply the motor's fresh boot and status reports required by BoatClient."""
+    health = _frame("NODE_HEALTH", {"boot_id": 44, "time_boot_ms": 1000,
+        "fault_flags": 0, "sensor_valid_fields": 0, "queue_drops": 0,
+        "reset_reason": 1, "feedback_valid": 1}, system=1, component=154)
+    status = _frame("ACTUATOR_STATUS", {"time_boot_ms": 1000, "command_id": 0,
+        "requested_position_cdeg": 0, "measured_position_cdeg": 0,
+        "velocity_cdeg_s": 0, "fault_flags": 0, "actuator": 1,
+        "control_source": 0, "result": 0, "enabled": 0},
+        system=1, component=154)
+    transport.inject(health)
+    transport.inject(status)
+    assert any(getattr(event, "state", None) == "reconciled" for event in events)
+    return health, status
+
+
 def _frame(name: str, fields: dict[str, int], *, system: int, component: int, sequence: int = 0) -> bytes:
     return codec.encode(name, fields, system=system, component=component, sequence=sequence)
 
@@ -77,9 +94,11 @@ def _request_result(ticket: RequestTicket, *, target_system: int = SYSTEM_GROUND
 
 def _check_client_request_fields() -> tuple[str, list[dict]]:
     clock, transport = ManualClock(10), CapturingTransport("ssh-fixture")
-    client = BoatClient(transport, clock=clock)
+    client, events = BoatClient(transport, clock=clock), []
+    client.subscribe(events.append)
     with patch("boat.client.secrets.randbits", return_value=0x11111111):
         client.connect()
+    health, status = _reconcile_motor(client, transport, events)
     ticket, message = _request(client, transport)
     fields = message["fields"]
     assert message["name"] == "ACTUATOR_REQUEST"
@@ -90,7 +109,9 @@ def _check_client_request_fields() -> tuple[str, list[dict]]:
         "target_system": 1, "target_component": COMPONENT_MOTOR,
         "actuator": 2, "opcode": 2, "control_source": 3,
     }
-    trace = [{"event": "client_out", "transport": "ssh-fixture", "hex": transport.sent[0].hex()}]
+    trace = [{"event": "client_in", "name": "NODE_HEALTH", "hex": health.hex(), "boot_id": 44},
+             {"event": "client_in", "name": "ACTUATOR_STATUS", "hex": status.hex(), "motor_boot_id": 44},
+             {"event": "client_out", "transport": "ssh-fixture", "hex": transport.sent[-1].hex()}]
     return "BoatClient emitted the frozen STEP request identity and correlation fields.", trace
 
 
@@ -105,11 +126,12 @@ def _check_client_ping_and_imu() -> tuple[str, list[dict]]:
     assert ping["name"] == "PING"
     assert ping["fields"]["target_system"] == ping["fields"]["target_component"] == 0
     clock.advance(0.125)
-    transport.inject(_frame("PING", {"time_usec": ping["fields"]["time_usec"],
+    pong_frame = _frame("PING", {"time_usec": ping["fields"]["time_usec"],
                                     "seq": ping["fields"]["seq"],
                                     "target_system": SYSTEM_GROUND,
                                     "target_component": COMPONENT_GROUND},
-                           system=1, component=154))
+                           system=1, component=154)
+    transport.inject(pong_frame)
     pong = [event for event in events if isinstance(event, PongReply)]
     assert len(pong) == 1 and pong[0].rtt_ms == 125.0
     assert (pong[0].system, pong[0].component) == (1, 154)
@@ -128,7 +150,7 @@ def _check_client_ping_and_imu() -> tuple[str, list[dict]]:
     assert samples[0].valid_fields == 3 and samples[0].source == (1, 1)
     return "BoatClient matched ping identity/RTT and preserved IMU units, source and validity from the reported health mask.", [
         {"event": "client_out", "name": "PING", "hex": transport.sent[0].hex()},
-        {"event": "client_in", "name": "PING", "hex": transport.sent[0].hex(), "rtt_ms": 125.0},
+        {"event": "client_in", "name": "PING", "hex": pong_frame.hex(), "rtt_ms": 125.0},
         {"event": "client_in", "name": "SCALED_IMU", "hex": imu.hex(), "source": [1, 1], "valid_fields": 3},
     ]
 
@@ -139,6 +161,7 @@ def _check_invalid_and_unmatched_results() -> tuple[str, list[dict]]:
     client.subscribe(events.append)
     with patch("boat.client.secrets.randbits", return_value=0x33333333):
         client.connect()
+    health, status = _reconcile_motor(client, transport, events)
     ticket = client.set_absolute_angle(1, 900)
     good = transport.sent[-1]
     damaged = good[:-1] + bytes((good[-1] ^ 0x80,))
@@ -157,7 +180,9 @@ def _check_invalid_and_unmatched_results() -> tuple[str, list[dict]]:
     outcomes = [event for event in events if isinstance(event, RequestOutcome)]
     assert len(outcomes) == 1
     assert outcomes[0].request_id == ticket.request_id
-    return "Damaged and signed frames were rejected by protocol.codec; BoatClient ignored a response addressed to another target and accepted the matching correlation.", [
+    return "Fresh motor boot/status reports reconciled before movement. Damaged and signed frames were rejected by protocol.codec; BoatClient ignored a response addressed to another target and accepted the matching correlation.", [
+        {"event": "client_in", "name": "NODE_HEALTH", "hex": health.hex(), "boot_id": 44},
+        {"event": "client_in", "name": "ACTUATOR_STATUS", "hex": status.hex(), "motor_boot_id": 44},
         {"event": "client_out", "name": "ACTUATOR_REQUEST", "hex": good.hex()},
         {"event": "client_in_rejected", "reason": "damaged_crc", "hex": damaged.hex()},
         {"event": "client_in_rejected", "reason": "signed", "hex": bytes(signed).hex()},
@@ -167,11 +192,13 @@ def _check_invalid_and_unmatched_results() -> tuple[str, list[dict]]:
 
 
 def _check_reconnect_and_ambiguous_write() -> tuple[str, list[dict]]:
-    clock, transport = ManualClock(), CapturingTransport()
+    clock, transport, events = ManualClock(), CapturingTransport(), []
     client = BoatClient(transport, clock=clock)
+    client.subscribe(events.append)
     with patch("boat.client.secrets.randbits", side_effect=(0x44444444, 0x55555555)):
         client.connect()
         first_session = client.ground_session
+        _reconcile_motor(client, transport, events)
         transport.fail_next_write = True
         try:
             client.step(1, 500)
@@ -180,14 +207,23 @@ def _check_reconnect_and_ambiguous_write() -> tuple[str, list[dict]]:
         else:
             raise AssertionError("injected ambiguous write did not surface")
         attempts_before_reconnect = len(transport.attempts)
+        assert not transport.opened
+        unknown = [event for event in events if isinstance(event, RequestOutcome)]
+        assert len(unknown) == 1
+        assert (unknown[0].result, unknown[0].state) == (0, 0), "ambiguous send must report UNKNOWN"
+        assert unknown[0].motor_boot_id == 44, (
+            f"UNKNOWN must retain reconciled motor boot 44; got {unknown[0].motor_boot_id}")
         client.disconnect()
         client.connect()
         second_session = client.ground_session
     assert first_session != second_session
     assert len(transport.attempts) == attempts_before_reconnect
     assert len(transport.sent) == 0
-    return "A failed ambiguous write surfaced to the caller; reconnect changed the client session and caused no movement replay.", [
+    return "After boot-44 reconciliation, a failed ambiguous write emitted UNKNOWN and disconnected; reconnect changed session and replayed no movement.", [
         {"event": "write_ambiguous", "attempts": attempts_before_reconnect},
+        {"event": "request_unknown", "request_id": unknown[0].request_id,
+         "result": unknown[0].result, "state": unknown[0].state,
+         "motor_boot_id": unknown[0].motor_boot_id},
         {"event": "client_reconnect", "old_session": first_session, "new_session": second_session},
         {"event": "replay_check", "movement_frames_after_reconnect": len(transport.sent)},
     ]
@@ -289,9 +325,12 @@ def build_report() -> tuple[list[Scenario], list[dict]]:
 
 
 def _document(scenarios: list[Scenario], trace: list[dict]) -> dict:
+    overall = ("FAIL" if any(s.status == "FAIL" for s in scenarios) else
+               "PASS" if scenarios and all(s.status == "PASS" for s in scenarios) else
+               "PENDING")
     return {
         "suite": "boat-midsem-scenarios-1-11",
-        "overall": "FAIL" if any(s.status == "FAIL" for s in scenarios) else "PENDING",
+        "overall": overall,
         "exit_policy": "nonzero when any scenario is FAIL or PENDING",
         "scenarios": [{"id": s.number, "title": s.title, "status": s.status,
                        "pending_reason": s.pending_reason,
@@ -305,12 +344,17 @@ def _write_junit(path: Path, scenarios: list[Scenario]) -> None:
     checks = [check for scenario in scenarios for check in scenario.checks]
     suite = ET.Element("testsuite", name="boat-midsem-scenarios-1-11",
                        tests=str(len(scenarios) + len(checks)),
-                       failures=str(sum(check.status == "FAIL" for check in checks)),
+                       failures=str(sum(check.status == "FAIL" for check in checks) +
+                                    sum(s.status == "FAIL" for s in scenarios)),
                        skipped=str(sum(s.status == "PENDING" for s in scenarios)))
     for scenario in scenarios:
         case = ET.SubElement(suite, "testcase", classname=f"scenario.{scenario.number}", name="production integration")
         if scenario.status == "PENDING":
             ET.SubElement(case, "skipped", message=scenario.pending_reason)
+        elif scenario.status == "FAIL":
+            failure = ET.SubElement(case, "failure", message=f"scenario {scenario.number} failed")
+            failure.text = "; ".join(check.detail for check in scenario.checks
+                                      if check.status == "FAIL")
         for check in scenario.checks:
             check_case = ET.SubElement(suite, "testcase", classname=f"scenario.{scenario.number}", name=check.name)
             if check.status == "FAIL":
