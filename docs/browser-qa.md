@@ -28,16 +28,29 @@ Date: 2026-10-24
 | Stale status and invalid feedback | PASS | Production `STATE.can_move_actuator` returned false after status age exceeded five seconds and after a decoded motor health record reported `feedback_valid=0`. |
 | Explicit reconnect does not replay | PASS | After an ambiguous send, explicit reconnect established a different ground session and sent zero movement requests on the new adapter. Browser reconnect also produced zero movement requests in the post-reconnect trace window. |
 | Browser console | PASS | Chromium CDP session captured no console error entries or uncaught exceptions. T3 preview automation timeouts were tool failures, not page console errors. |
-| Desktop/mobile horizontal overflow | FAIL | See defect below. |
+| Desktop/mobile horizontal overflow | PASS on focused retest | The prior failure was resolved by revision `9246460cd8d3550d16a24daa1ad1c5de7c15a47b`; see retest measurements below. |
 | Physical LoRa, SSH, and boat hardware behavior | PENDING | Intentionally not exercised; all claims above are simulation or fake-IO software evidence. |
 
-## Defect: trace text expands the page horizontally
+## Resolved defect: trace text expanded the page horizontally
 
 Severity: P2.
 
 At a 1,366 × 768 desktop viewport, the document measured 2,134 CSS pixels wide. In mobile emulation, the layout viewport was 390 × 844, but the document measured 2,036 pixels wide. Both exceed the viewport, so the no-horizontal-overflow requirement fails. The event-log text contains long JSON lines without break opportunities; its `whitespace-pre-wrap` element expands the card/page instead of staying within the available width.
 
-Reproduction: connect the simulation, allow raw frame events to populate the packet/event log, then inspect `document.documentElement.scrollWidth` against `document.documentElement.clientWidth`. The same overflow remains in the mobile breakpoint. Screenshots show the affected layout.
+Original reproduction on the pre-fix revision: connect the simulation, allow raw frame events to populate the packet/event log, then inspect `document.documentElement.scrollWidth` against `document.documentElement.clientWidth`. The same overflow occurred at the mobile breakpoint.
+
+### Focused regression retest
+
+- Tested revision: `9246460cd8d3550d16a24daa1ad1c5de7c15a47b` (`HEAD`), including the root column and trace-label wrapping constraints.
+- Environment: local NiceGUI server on `127.0.0.1:8082`, using the supplied `t3-e0a3b20c` groundstation virtualenv. Chromium 154 via CDP fallback. Simulation transport only; no hardware or network endpoint was opened.
+- T3 preview opened an owned tab and accepted resize, but `preview_snapshot` timed out twice with the raw error `Preview snapshot failed: Preview automation snapshot timed out after 15000ms.` The focused retest then used the existing local Chromium/CDP fallback.
+- Desktop 1366×768: `document.documentElement.scrollWidth=1351`, `clientWidth=1351`; no horizontal overflow. The document width is smaller than the viewport because Chromium reserves the vertical scrollbar.
+- Mobile 390×844: `scrollWidth=390`, `clientWidth=390`; no horizontal overflow. All eight visible controls (connect, disconnect, ping, absolute angle, both step buttons, STOP, and export) had nonzero layout boxes and remained in the vertically scrollable page.
+- The populated trace label was 294 px wide with `scrollWidth=294`; its internal log viewport was 256 px high with `scrollHeight=3936`, `overflow:auto`, and `overflow-wrap:anywhere`. The card was 326 px wide with no horizontal overflow. Long JSON lines wrap, and the log scrolls inside its own viewport.
+- Clicked one positive `+ STEP` command and STOP while connected; the UI recorded an actuator request and remained connected. Explicit disconnect/reconnect then returned to `CONNECTED · SIMULATION`.
+- Browser console errors and uncaught exceptions: 0.
+
+Retest screenshots and measurements: [desktop connected](</tmp/boat-groundstation-layout-regression/desktop-connected.png>), [mobile connected after reconnect](</tmp/boat-groundstation-layout-regression/mobile-connected-reconnect.png>), [mobile trace log](</tmp/boat-groundstation-layout-regression/mobile-log.png>), and [measurements JSON](</tmp/boat-groundstation-layout-regression/measurements.json>).
 
 ## Screenshots and export
 
