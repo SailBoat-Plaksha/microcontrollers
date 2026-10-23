@@ -202,6 +202,107 @@
       <entry value="4" name="LINK_TYPE_USB">
         <description>USB or local development serial link.</description>
       </entry>
+      <entry value="5" name="LINK_TYPE_I2C">
+        <description>Onboard shared I2C bus between the single-controller computer and its addressed peers.</description>
+      </entry>
+    </enum>
+
+    <enum name="MOVEMENT_OPCODE">
+      <description>Operation requested by one ACTUATOR_REQUEST movement envelope.</description>
+      <entry value="0" name="MOVEMENT_OPCODE_NONE">
+        <description>No operation. The request is invalid and must be rejected without moving the actuator.</description>
+      </entry>
+      <entry value="1" name="MOVEMENT_OPCODE_ABSOLUTE">
+        <description>Move to the absolute angle carried in delta_cdeg.</description>
+      </entry>
+      <entry value="2" name="MOVEMENT_OPCODE_STEP">
+        <description>Resolve the signed relative delta in delta_cdeg exactly once against valid fresh actuator feedback, then move to the resolved absolute target.</description>
+      </entry>
+      <entry value="3" name="MOVEMENT_OPCODE_STOP">
+        <description>Cancel the active or queued movement and hold. Distinct from a zero-degree absolute target. delta_cdeg must be zero.</description>
+      </entry>
+    </enum>
+
+    <enum name="MOTOR_STATE">
+      <description>Progress state of one movement request at the reporting node. Reported states are distinct observations and must not be collapsed.</description>
+      <entry value="0" name="MOTOR_STATE_UNKNOWN">
+        <description>The state is not known, for example after a reboot or a lost response.</description>
+      </entry>
+      <entry value="1" name="MOTOR_STATE_RECEIVED">
+        <description>The request was received and is awaiting validation.</description>
+      </entry>
+      <entry value="2" name="MOTOR_STATE_ACCEPTED">
+        <description>The request passed validation and is queued, but motion has not started.</description>
+      </entry>
+      <entry value="3" name="MOTOR_STATE_RUNNING">
+        <description>The actuator is moving under this request.</description>
+      </entry>
+      <entry value="4" name="MOTOR_STATE_COMPLETED">
+        <description>The requested movement reached its target.</description>
+      </entry>
+      <entry value="5" name="MOTOR_STATE_STOPPED">
+        <description>The movement was stopped before completion, by STOP, timeout, or preemption.</description>
+      </entry>
+      <entry value="6" name="MOTOR_STATE_REJECTED">
+        <description>The request was rejected. The rejection is identified independently of the last accepted action.</description>
+      </entry>
+    </enum>
+
+    <enum name="CORRELATION_RESULT">
+      <description>Correlated outcome of one ground-issued movement request. These values do not modify COMMAND_RESULT, which keeps its existing meaning in ACTUATOR_STATUS.</description>
+      <entry value="0" name="CORRELATION_RESULT_UNKNOWN">
+        <description>The outcome is not known. The next step is status inspection, never a repeat movement.</description>
+      </entry>
+      <entry value="1" name="CORRELATION_RESULT_COMPLETED">
+        <description>The request completed its requested movement.</description>
+      </entry>
+      <entry value="2" name="CORRELATION_RESULT_DENIED">
+        <description>The request was denied by authority policy, for example while RC owns the actuator.</description>
+      </entry>
+      <entry value="3" name="CORRELATION_RESULT_INVALID">
+        <description>The request was invalid, for example a bad actuator, range, target, or a STOP with a nonzero delta.</description>
+      </entry>
+      <entry value="4" name="CORRELATION_RESULT_STALE">
+        <description>The request expired or arrived after a session or boot change.</description>
+      </entry>
+      <entry value="5" name="CORRELATION_RESULT_SUPERSEDED">
+        <description>A newer request replaced this one before it completed.</description>
+      </entry>
+    </enum>
+
+    <enum name="RESET_REASON">
+      <description>Why the reporting node last restarted. Report UNKNOWN rather than guessing.</description>
+      <entry value="0" name="RESET_REASON_UNKNOWN">
+        <description>The reset reason is not known or not measured.</description>
+      </entry>
+      <entry value="1" name="RESET_REASON_POWER_ON">
+        <description>Power was applied or the node was manually reset.</description>
+      </entry>
+      <entry value="2" name="RESET_REASON_WATCHDOG">
+        <description>A watchdog or missed-deadline reset occurred.</description>
+      </entry>
+      <entry value="3" name="RESET_REASON_SOFTWARE">
+        <description>The node restarted itself deliberately.</description>
+      </entry>
+      <entry value="4" name="RESET_REASON_BROWNOUT">
+        <description>Supply voltage fell below the reset threshold.</description>
+      </entry>
+    </enum>
+
+    <enum name="SENSOR_VALID_FIELDS" bitmask="true">
+      <description>Measurements currently valid at the reporting node. Used to mark unmeasured fields, such as SCALED_IMU magnetometer and temperature, invalid instead of reporting zero as a real measurement.</description>
+      <entry value="1" name="SENSOR_VALID_FIELDS_ACCELEROMETER">
+        <description>Accelerometer samples are valid.</description>
+      </entry>
+      <entry value="2" name="SENSOR_VALID_FIELDS_GYROSCOPE">
+        <description>Gyroscope samples are valid.</description>
+      </entry>
+      <entry value="4" name="SENSOR_VALID_FIELDS_MAGNETOMETER">
+        <description>Magnetometer samples are valid.</description>
+      </entry>
+      <entry value="8" name="SENSOR_VALID_FIELDS_TEMPERATURE">
+        <description>Temperature samples are valid.</description>
+      </entry>
     </enum>
 
     <enum name="BUS_STREAM_FLAGS" bitmask="true">
@@ -319,6 +420,43 @@
       <field type="uint8_t" name="target_system">System ID of the intended recipient.</field>
       <field type="uint8_t" name="target_component">Component ID of the intended recipient.</field>
       <field type="uint8_t" name="max_frames">Maximum number of complete MAVLink frames the recipient may transmit during this grant.</field>
+    </message>
+
+    <message id="200008" name="ACTUATOR_REQUEST">
+      <description>Unified correlated movement envelope for absolute-angle, relative-step and stop operations. This is the single agreed request envelope for ground-issued movement; ACTUATOR_SETPOINT keeps its existing semantics unchanged for the isolated motor bench. Receivers must reject stale, duplicate, unauthorized, out-of-range, or session-mismatched requests without moving the actuator.</description>
+      <field type="uint32_t" name="request_id">Ground-generated identifier unique within ground_session, echoed in REQUEST_RESULT for correlation. Monotonic per session where practical.</field>
+      <field type="uint32_t" name="ground_session">Random per-connection ground session identifier. A reconnect selects a new value; queued movement carrying an old session is invalid.</field>
+      <field type="int16_t" name="delta_cdeg" units="cdeg">Absolute target angle for MOVEMENT_OPCODE_ABSOLUTE, signed relative delta resolved once against valid fresh feedback for MOVEMENT_OPCODE_STEP, and zero for MOVEMENT_OPCODE_STOP.</field>
+      <field type="uint16_t" name="timeout_ms" units="ms">Freshness timeout after reception. Zero uses the receiver's configured default.</field>
+      <field type="uint16_t" name="max_rate_cdeg_s" units="cdeg/s">Maximum slew rate for this movement. Zero uses the receiver's configured default.</field>
+      <field type="uint8_t" name="target_system">System ID of the intended recipient.</field>
+      <field type="uint8_t" name="target_component">Component ID of the intended recipient.</field>
+      <field type="uint8_t" name="actuator" enum="ACTUATOR_ID">Actuator to command.</field>
+      <field type="uint8_t" name="opcode" enum="MOVEMENT_OPCODE">Requested operation.</field>
+      <field type="uint8_t" name="control_source" enum="CONTROL_SOURCE">Authority under which this request was produced.</field>
+    </message>
+
+    <message id="200009" name="NODE_HEALTH">
+      <description>Per-node boot identity, uptime, faults, sensor validity and queue health. boot_id is regenerated at every boot, never hardcoded, so consumers can detect reboots and invalidate stale movement state. Link packet and error counters remain in LINK_STATUS.</description>
+      <field type="uint32_t" name="boot_id">Random per-boot identifier. All values from a previous boot are stale.</field>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Time since this node booted.</field>
+      <field type="uint16_t" name="fault_flags" enum="FAULT_FLAGS">Active faults. Zero means no reported fault.</field>
+      <field type="uint16_t" name="sensor_valid_fields" enum="SENSOR_VALID_FIELDS">Measurements currently valid at this node. Unmeasured fields elsewhere, such as SCALED_IMU magnetometer or temperature, are invalid rather than zero.</field>
+      <field type="uint16_t" name="queue_drops">Frames dropped by this node's bounded queues since boot.</field>
+      <field type="uint8_t" name="reset_reason" enum="RESET_REASON">Reason for the last reset. Report RESET_REASON_UNKNOWN rather than guessing.</field>
+      <field type="uint8_t" name="feedback_valid">One when actuator position feedback is calibrated and fresh. Zero at nodes without actuator feedback.</field>
+    </message>
+
+    <message id="200010" name="REQUEST_RESULT">
+      <description>Correlated outcome of one ground movement request, sent by the boat router and targeted at the originating ground client. Terminal states remain available for later query; ground retries must not depend on this report being delivered exactly once.</description>
+      <field type="uint32_t" name="ground_session">ground_session from the tracked request.</field>
+      <field type="uint32_t" name="request_id">request_id from the tracked request.</field>
+      <field type="uint32_t" name="motor_boot_id">boot_id under which the motor node processed or rejected the request. A different boot_id means the request's outcome is unknown.</field>
+      <field type="uint32_t" name="local_command_id">Motor-local command identifier of the accepted action, for cross-reference with ACTUATOR_STATUS.command_id. Zero when no action was accepted.</field>
+      <field type="uint8_t" name="result" enum="CORRELATION_RESULT">Correlation outcome of the request.</field>
+      <field type="uint8_t" name="state" enum="MOTOR_STATE">Motor-side state observation associated with this outcome.</field>
+      <field type="uint8_t" name="target_system">System ID of the originating ground client.</field>
+      <field type="uint8_t" name="target_component">Component ID of the originating ground client.</field>
     </message>
   </messages>
 </mavlink>
