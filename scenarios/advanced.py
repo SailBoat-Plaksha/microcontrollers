@@ -52,6 +52,7 @@ def _load_relay():
     lib.scenario_relay_i2c_read.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
     lib.scenario_relay_i2c_read.restype = ctypes.c_int
     lib.scenario_relay_radio_next.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_size_t)]
+    lib.scenario_relay_radio_complete.argtypes = [ctypes.c_int]
     lib.scenario_relay_radio_next.restype = ctypes.c_int
     lib.scenario_modem_build.argtypes = [ctypes.c_uint16, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
                                          ctypes.c_char_p, ctypes.c_size_t]
@@ -100,8 +101,27 @@ class LoRaRig:
         self.tmp, self.relay = _load_relay()
         self.relay.scenario_relay_init(0x15801580)
         self.gateway, self.uart, self.usb = _actual_gateway()
-        # Complete four actual gateway modem setup responses.
-        for _ in range(4): self.gateway.feed_modem(b"+OK\r\n")
+        # Drive the actual nonblocking config TX/wait states. ACK only after
+        # each complete AT line has crossed the UART boundary. This clock is
+        # deliberately fixture-owned and passed into every gateway tick.
+        self.gateway_now_ms = 0
+        self.gateway_commands = []
+        for expected in self.gateway.configs:
+            start = len(self.uart.writes)
+            for _ in range(100):
+                self.gateway.tick(self.gateway_now_ms)
+                self.gateway_now_ms += 1
+                if self.gateway.modem_state == "config_wait":
+                    break
+            else:
+                raise AssertionError(f"gateway did not finish writing modem config {expected!r}")
+            actual = b"".join(self.uart.writes[start:]).strip()
+            if actual != expected.encode():
+                raise AssertionError(f"gateway config UART line {actual!r} != {expected!r}")
+            self.gateway_commands.append(actual)
+            self.gateway.feed_modem(b"+OK\r\n", self.gateway_now_ms)
+        if not self.gateway.modem_ready:
+            raise AssertionError("gateway did not reach modem_ready after four config ACKs")
         self.rig = IntegratedRig(imu=imu, boot_id=0x15401540)
         self.rig.router.boot_id=0xA0B0C0D0
         original_write, original_read = self.rig.bus.write_mailbox, self.rig.bus.read_mailbox
@@ -159,8 +179,15 @@ class LoRaRig:
     def gateway_usb_to_radio(self, frame: bytes):
         accepted = self.gateway.feed_usb(frame)
         if accepted != 1: raise AssertionError(f"production gateway accepted {accepted} USB frames")
-        self.gateway.tick()
-        command = self.uart.writes[-1].strip()
+        start = len(self.uart.writes)
+        for _ in range(100):
+            self.gateway.tick(self.gateway_now_ms)
+            self.gateway_now_ms += 1
+            if self.gateway.modem_state == "send_wait":
+                break
+        else:
+            raise AssertionError(f"gateway did not finish writing queued AT+SEND; state={self.gateway.modem_state}")
+        command = b"".join(self.uart.writes[start:]).strip()
         if not command.startswith(b"AT+SEND=1,"):
             raise AssertionError(f"gateway emitted unexpected UART data {command!r}")
         parts = command.split(b",", 2)
@@ -168,6 +195,8 @@ class LoRaRig:
         self.trace.append({"at":self.rig.clock.now,"direction":"gateway_to_modem","hex":command.hex()})
         # LoRa air and UART modem framing terminate at this injected physical
         # boundary. C modem parser consumes the production +RCV line.
+        # The virtual modem ACK arrives only after the complete send command.
+        self.gateway.feed_modem(b"+OK\r\n", self.gateway_now_ms)
         line = b"+RCV=2," + parts[1] + b"," + encoded + b",-70,8.0\r\n"
         result = self.relay.scenario_relay_modem_line(line, 2)
         self.trace.append({"at":self.rig.clock.now,"direction":"modem_to_relay","hex":line.hex(),"result":result})
@@ -194,10 +223,16 @@ class LoRaRig:
             command = cmd.value
             encoded = command.split(b",", 2)[2]
             line = b"+RCV=1," + str(len(encoded)).encode() + b"," + encoded + b",-69,7.5\r\n"
-            self.gateway.feed_modem(line)
+            self.gateway.feed_modem(line, self.gateway_now_ms)
+            # A terminal REQUEST_RESULT remains reserved/in-flight in the real
+            # relay until the modem reports local acceptance. Complete that
+            # transaction at the same explicit virtual modem boundary.
+            if codec.decode(raw)["name"] == "REQUEST_RESULT":
+                self.relay.scenario_relay_radio_complete(1)
             before = len(self.usb.chunks)
             for _ in range(100):
-                self.gateway.tick()
+                self.gateway.tick(self.gateway_now_ms)
+                self.gateway_now_ms += 1
                 if not self.gateway.usb_queue: break
             chunks=self.usb.chunks[before:]
             piece=b"".join(chunks)
@@ -227,8 +262,19 @@ def run_lora_full_route():
         # Completion uses separately injected feedback, and resulting actual
         # REQUEST_RESULT and status are forwarded through relay + gateway.
         rig.rig.step_encoder(1, 900)
-        for _ in range(10): rig.rig.transport.pump(1)
-        radio_frames = rig.pi_to_gateway_usb()
+        radio_frames = []
+        # Drain the actual relay after each bounded router step. The relay now
+        # holds one terminal result in flight until the virtual modem accepts
+        # it; batching all polls before draining would only observe a coalesced
+        # intermediate snapshot and would not model that transaction boundary.
+        for _ in range(30):
+            rig.rig.transport.pump(1)
+            radio_frames.extend(rig.pi_to_gateway_usb())
+            if (any(codec.decode(raw)["name"] == "REQUEST_RESULT" and
+                    codec.decode(raw)["fields"]["request_id"] == ticket.request_id and
+                    codec.decode(raw)["fields"]["state"] == 4 for raw, _ in radio_frames) and
+                    any(codec.decode(raw)["name"] == "ACTUATOR_STATUS" for raw, _ in radio_frames)):
+                break
         names = [codec.decode(raw)["name"] for raw, _ in radio_frames]
         assert "REQUEST_RESULT" in names and "ACTUATOR_STATUS" in names, names
         assert all(codec.decode(raw)["system"] == 1 for raw, _ in radio_frames)

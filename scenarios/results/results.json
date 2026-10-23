@@ -534,11 +534,6 @@
                 "address": 9,
                 "hex": "fd1200002c019a420d03832b00000100000084030000000000000102186500000000000000000000000000000000000000000000000000000000000000000000",
                 "op": "write"
-              },
-              {
-                "address": 9,
-                "hex": "fd04000002019e490d0380158015c614000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-                "op": "read"
               }
             ],
             "client_received_completion": true,
@@ -546,12 +541,11 @@
             "request_id": 1,
             "returned_names": [
               "REQUEST_RESULT",
-              "REQUEST_RESULT",
-              "REQUEST_RESULT",
-              "REQUEST_RESULT",
               "NODE_HEALTH",
-              "ACTUATOR_STATUS",
-              "HEARTBEAT"
+              "HEARTBEAT",
+              "REQUEST_RESULT",
+              "REQUEST_RESULT",
+              "ACTUATOR_STATUS"
             ],
             "session": 1348497536,
             "target_cdeg": 900,
@@ -1100,6 +1094,26 @@
                 ]
               },
               {
+                "at": 11.299999999999972,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd1400002a019a"
+              },
+              {
+                "at": 11.299999999999972,
+                "direction": "relay_to_gateway_usb",
+                "hex": "4a0d03807060500100000040154015000000000001ffbecf83fd04000002019e490d0380158015c614"
+              },
+              {
+                "at": 11.299999999999972,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd09000029019a000000000000000000000403516b"
+              },
+              {
+                "at": 11.319999999999972,
+                "direction": "relay_to_gateway_usb",
+                "hex": "fd14000032019a"
+              },
+              {
                 "at": 11.319999999999972,
                 "direction": "router_frame",
                 "hex": "fd04000002019e490d0380158015c614",
@@ -1108,6 +1122,11 @@
                   1,
                   158
                 ]
+              },
+              {
+                "at": 11.37999999999997,
+                "direction": "relay_to_gateway_usb",
+                "hex": "4a0d0380706050"
               },
               {
                 "at": 11.37999999999997,
@@ -1131,48 +1150,8 @@
               },
               {
                 "at": 11.43999999999997,
-                "direction": "router_frame",
-                "hex": "fd04000002019e490d0380158015c614",
-                "name": "NODE_HEALTH",
-                "source": [
-                  1,
-                  158
-                ]
-              },
-              {
-                "at": 11.479999999999968,
                 "direction": "relay_to_gateway_usb",
-                "hex": "fd1400000201014a0d03807060500100000040154015000000000001ffbe405d"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd1400002a019a4a0d03807060500100000040154015000000000001ffbecf83"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd14000032019a4a0d03807060500100000040154015010000000104ffbe9625"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd1400002b019a4a0d03807060500100000040154015010000000002ffbeb7b9"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd04000002019e490d0380158015c614"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd1200002c019a420d03832b000001000000840300000000000001021865"
-              },
-              {
-                "at": 11.479999999999968,
-                "direction": "relay_to_gateway_usb",
-                "hex": "fd09000029019a000000000000000000000403516b"
+                "hex": "0100000040154015010000000104ffbe9625fd1400002b019a4a0d03807060500100000040154015010000000002ffbeb7b9fd1200002c019a420d03832b000001000000840300000000000001021865"
               }
             ],
             "usb_fragment_bytes": 3
@@ -4294,11 +4273,6 @@
             "address": 9,
             "hex": "fd1200002c019a420d03832b00000100000084030000000000000102186500000000000000000000000000000000000000000000000000000000000000000000",
             "op": "write"
-          },
-          {
-            "address": 9,
-            "hex": "fd04000002019e490d0380158015c614000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "op": "read"
           }
         ],
         "client_received_completion": true,
@@ -4306,12 +4280,11 @@
         "request_id": 1,
         "returned_names": [
           "REQUEST_RESULT",
-          "REQUEST_RESULT",
-          "REQUEST_RESULT",
-          "REQUEST_RESULT",
           "NODE_HEALTH",
-          "ACTUATOR_STATUS",
-          "HEARTBEAT"
+          "HEARTBEAT",
+          "REQUEST_RESULT",
+          "REQUEST_RESULT",
+          "ACTUATOR_STATUS"
         ],
         "session": 1348497536,
         "target_cdeg": 900,
@@ -4860,6 +4833,26 @@
             ]
           },
           {
+            "at": 11.299999999999972,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd1400002a019a"
+          },
+          {
+            "at": 11.299999999999972,
+            "direction": "relay_to_gateway_usb",
+            "hex": "4a0d03807060500100000040154015000000000001ffbecf83fd04000002019e490d0380158015c614"
+          },
+          {
+            "at": 11.299999999999972,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd09000029019a000000000000000000000403516b"
+          },
+          {
+            "at": 11.319999999999972,
+            "direction": "relay_to_gateway_usb",
+            "hex": "fd14000032019a"
+          },
+          {
             "at": 11.319999999999972,
             "direction": "router_frame",
             "hex": "fd04000002019e490d0380158015c614",
@@ -4868,6 +4861,11 @@
               1,
               158
             ]
+          },
+          {
+            "at": 11.37999999999997,
+            "direction": "relay_to_gateway_usb",
+            "hex": "4a0d0380706050"
           },
           {
             "at": 11.37999999999997,
@@ -4891,48 +4889,8 @@
           },
           {
             "at": 11.43999999999997,
-            "direction": "router_frame",
-            "hex": "fd04000002019e490d0380158015c614",
-            "name": "NODE_HEALTH",
-            "source": [
-              1,
-              158
-            ]
-          },
-          {
-            "at": 11.479999999999968,
             "direction": "relay_to_gateway_usb",
-            "hex": "fd1400000201014a0d03807060500100000040154015000000000001ffbe405d"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd1400002a019a4a0d03807060500100000040154015000000000001ffbecf83"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd14000032019a4a0d03807060500100000040154015010000000104ffbe9625"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd1400002b019a4a0d03807060500100000040154015010000000002ffbeb7b9"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd04000002019e490d0380158015c614"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd1200002c019a420d03832b000001000000840300000000000001021865"
-          },
-          {
-            "at": 11.479999999999968,
-            "direction": "relay_to_gateway_usb",
-            "hex": "fd09000029019a000000000000000000000403516b"
+            "hex": "0100000040154015010000000104ffbe9625fd1400002b019a4a0d03807060500100000040154015010000000002ffbeb7b9fd1200002c019a420d03832b000001000000840300000000000001021865"
           }
         ],
         "usb_fragment_bytes": 3

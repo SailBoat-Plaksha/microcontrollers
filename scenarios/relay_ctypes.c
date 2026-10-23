@@ -42,6 +42,10 @@ int scenario_relay_radio_next(uint8_t *frame, size_t *length) {
     return relay_radio_next(&relay, frame, length) ? 1 : 0;
 }
 
+void scenario_relay_radio_complete(int accepted) {
+    relay_radio_complete(&relay, accepted != 0);
+}
+
 unsigned scenario_relay_forwarded_from_radio(void) { return relay.forwarded_from_radio; }
 unsigned scenario_relay_forwarded_from_pi(void) { return relay.forwarded_from_pi; }
 unsigned scenario_relay_malformed(void) { return relay.malformed_frames; }
