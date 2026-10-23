@@ -59,6 +59,18 @@ static bool queued_frame_is_terminal(const uint8_t *frame) {
   return state == STATE_COMPLETED || state == STATE_STOPPED || state == STATE_REJECTED;
 }
 
+static bool same_request(const mavlink_actuator_request_t *left,
+                         const mavlink_actuator_request_t *right) {
+  return left->request_id == right->request_id &&
+         left->ground_session == right->ground_session &&
+         left->delta_cdeg == right->delta_cdeg && left->timeout_ms == right->timeout_ms &&
+         left->max_rate_cdeg_s == right->max_rate_cdeg_s &&
+         left->target_system == right->target_system &&
+         left->target_component == right->target_component &&
+         left->actuator == right->actuator && left->opcode == right->opcode &&
+         left->control_source == right->control_source;
+}
+
 static void queue_remove(motor_adapter_t *a, uint8_t logical_index) {
   for (uint8_t i = logical_index; i + 1u < a->tx_count; ++i) {
     uint8_t dst = (uint8_t)((a->tx_head + i) % MOTOR_STATUS_QUEUE_CAPACITY);
@@ -68,10 +80,22 @@ static void queue_remove(motor_adapter_t *a, uint8_t logical_index) {
   a->tx_count--;
 }
 
+static uint8_t active_move_count(const motor_adapter_t *a) {
+  return (uint8_t)(a->state[0].active + a->state[1].active);
+}
+
 static void queue_message(motor_adapter_t *a, mavlink_message_t *msg) {
   uint8_t encoded[MOTOR_MAILBOX_BYTES];
   frame_from_message(msg, encoded);
-  if (a->tx_count == MOTOR_STATUS_QUEUE_CAPACITY) {
+  mavlink_request_result_t result_data;
+  bool terminal = false;
+  if (msg->msgid == MAVLINK_MSG_ID_REQUEST_RESULT) {
+    mavlink_msg_request_result_decode(msg, &result_data);
+    terminal = result_data.state == STATE_COMPLETED || result_data.state == STATE_STOPPED ||
+               result_data.state == STATE_REJECTED;
+  }
+  uint8_t queue_limit = (uint8_t)(MOTOR_STATUS_QUEUE_CAPACITY - active_move_count(a));
+  if (a->tx_count >= queue_limit) {
     uint8_t remove = MOTOR_STATUS_QUEUE_CAPACITY;
     for (uint8_t i = 0; i < a->tx_count; ++i) {
       uint8_t index = (uint8_t)((a->tx_head + i) % MOTOR_STATUS_QUEUE_CAPACITY);
@@ -83,12 +107,6 @@ static void queue_message(motor_adapter_t *a, mavlink_message_t *msg) {
     }
     queue_remove(a, remove);
     if (a->queue_drops != UINT16_MAX) a->queue_drops++;
-  }
-  mavlink_request_result_t result_data;
-  bool terminal = false;
-  if (msg->msgid == MAVLINK_MSG_ID_REQUEST_RESULT) {
-    mavlink_msg_request_result_decode(msg, &result_data);
-    terminal = result_data.state >= STATE_COMPLETED;
   }
   if (terminal) {
     a->tx_head = (uint8_t)((a->tx_head + MOTOR_STATUS_QUEUE_CAPACITY - 1u) % MOTOR_STATUS_QUEUE_CAPACITY);
@@ -109,8 +127,18 @@ static void emit_result(motor_adapter_t *a, const mavlink_actuator_request_t *r,
       TARGET_SYSTEM, TARGET_COMPONENT);
   int slot = actuator_slot(r->actuator);
   if (slot >= 0) {
-    frame_from_message(&msg, a->result_snapshot[slot]);
-    a->result_snapshot_valid[slot] = true;
+    motor_actuator_state_t *accepted = &a->state[slot];
+    if (accepted->seen && accepted->request_id == r->request_id &&
+        accepted->ground_session == r->ground_session &&
+        a->accepted_sysid[slot] == MOTOR_PI_SYSTEM &&
+        a->accepted_compid[slot] == MOTOR_PI_COMPONENT &&
+        same_request(&a->accepted_request[slot], r)) {
+      frame_from_message(&msg, a->result_snapshot[slot]);
+      a->result_snapshot_valid[slot] = true;
+    } else if (state == STATE_REJECTED) {
+      frame_from_message(&msg, a->rejected_snapshot[slot]);
+      a->rejected_snapshot_valid[slot] = true;
+    }
   }
   queue_message(a, &msg);
 }
@@ -180,13 +208,13 @@ static void stop_slot(motor_adapter_t *a, int slot, uint8_t state, uint8_t resul
   s->state = state;
   s->result = result;
   s->output_enabled = false;
+  s->velocity_cdeg_s = 0;
   s->command_result = result == RESULT_DENIED ? COMMAND_DENIED :
                       result == RESULT_INVALID ? COMMAND_INVALID :
                       result == RESULT_STALE ? COMMAND_TIMEOUT : COMMAND_ACCEPTED;
   s->fault_flags = result == RESULT_STALE ? 4u : 0u;
   if (s->seen && was_active) {
-    mavlink_actuator_request_t r = { .request_id = s->request_id, .ground_session = s->ground_session,
-                                     .actuator = a->config[slot].actuator };
+    mavlink_actuator_request_t r = a->accepted_request[slot];
     emit_result(a, &r, s->local_command_id, result, state);
   }
 }
@@ -207,11 +235,6 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
   a->rx_frames++;
   mavlink_actuator_request_t r;
   mavlink_msg_actuator_request_decode(m, &r);
-  emit_result(a, &r, 0, RESULT_UNKNOWN, STATE_RECEIVED);
-  if (r.opcode != OPCODE_STOP && a->tx_count > MOTOR_STATUS_QUEUE_CAPACITY - 5u) {
-    emit_result(a, &r, 0, RESULT_DENIED, STATE_REJECTED);
-    return true;
-  }
   int slot = actuator_slot(r.actuator);
   if (m->sysid != MOTOR_PI_SYSTEM || m->compid != MOTOR_PI_COMPONENT ||
       r.target_system != MOTOR_NODE_SYSTEM || r.target_component != MOTOR_NODE_COMPONENT ||
@@ -228,6 +251,19 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
       emit_result(a, &r, 0, RESULT_STALE, STATE_REJECTED);
       return true;
     }
+  }
+  if (a->current_ground_session == r.ground_session && a->have_request_id &&
+      r.request_id == a->last_request_id) {
+    const mavlink_actuator_request_t *prev = &a->last_request;
+    bool same = a->last_request_sysid == m->sysid && a->last_request_compid == m->compid &&
+                same_request(prev, &r);
+    if (same && s->seen && r.request_id == s->request_id &&
+        r.ground_session == s->ground_session) {
+      emit_result(a, &r, s->local_command_id, s->result, s->state);
+    } else {
+      emit_result(a, &r, 0, RESULT_INVALID, STATE_REJECTED);
+    }
+    return true;
   }
   bool any_active = a->state[0].active || a->state[1].active;
   if (a->current_ground_session && r.ground_session != a->current_ground_session &&
@@ -247,20 +283,21 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
   } else if (!a->current_ground_session) {
     a->current_ground_session = r.ground_session;
   }
-  if (a->have_request_id && r.request_id == a->last_request_id) {
-    if (s->seen && r.request_id == s->request_id && r.ground_session == s->ground_session) {
-      emit_result(a, &r, s->local_command_id, s->result, s->state);
-    } else {
-      emit_result(a, &r, 0, RESULT_INVALID, STATE_REJECTED);
-    }
+  if (a->have_request_id && r.request_id <= a->last_request_id) {
+    emit_result(a, &r, 0, RESULT_STALE, STATE_REJECTED);
     return true;
   }
-  if (a->have_request_id && (int32_t)(r.request_id - a->last_request_id) <= 0) {
-    emit_result(a, &r, 0, RESULT_STALE, STATE_REJECTED);
+  if (r.opcode != OPCODE_STOP &&
+      (uint16_t)a->tx_count + active_move_count(a) + 4u > MOTOR_STATUS_QUEUE_CAPACITY) {
+    emit_result(a, &r, 0, RESULT_DENIED, STATE_REJECTED);
     return true;
   }
   a->last_request_id = r.request_id;
   a->have_request_id = true;
+  a->last_request = r;
+  a->last_request_sysid = m->sysid;
+  a->last_request_compid = m->compid;
+  emit_result(a, &r, 0, RESULT_UNKNOWN, STATE_RECEIVED);
   if (r.opcode == OPCODE_STOP) {
     if (r.delta_cdeg != 0) {
       emit_result(a, &r, 0, RESULT_INVALID, STATE_REJECTED);
@@ -273,9 +310,15 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
     if (s->active) stop_slot(a, slot, STATE_STOPPED, RESULT_UNKNOWN);
     else if (a->io.stop) a->io.stop(a->io.context, c->actuator);
     s->request_id = r.request_id; s->ground_session = r.ground_session;
-    s->local_command_id = a->next_command_id++; s->seen = true;
+    s->local_command_id = (a->next_command_id && a->next_command_id != UINT32_MAX)
+                              ? a->next_command_id++ : 0;
+    s->seen = true;
+    a->accepted_request[slot] = r;
+    a->accepted_sysid[slot] = m->sysid;
+    a->accepted_compid[slot] = m->compid;
     s->state = STATE_STOPPED; s->result = RESULT_UNKNOWN; s->active = false;
     s->command_result = COMMAND_ACCEPTED; s->fault_flags = 0;
+    s->output_enabled = false; s->velocity_cdeg_s = 0;
     emit_result(a, &r, s->local_command_id, RESULT_UNKNOWN, STATE_STOPPED);
     emit_status(a, slot, true);
     return true;
@@ -290,6 +333,10 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
     return true;
   }
   if (s->active) {
+    emit_result(a, &r, 0, RESULT_DENIED, STATE_REJECTED);
+    return true;
+  }
+  if (!a->next_command_id || a->next_command_id == UINT32_MAX) {
     emit_result(a, &r, 0, RESULT_DENIED, STATE_REJECTED);
     return true;
   }
@@ -319,6 +366,9 @@ bool motor_adapter_process_message(motor_adapter_t *a, const mavlink_message_t *
   s->last_feedback_ms = now;
   s->last_count = count;
   s->state = STATE_ACCEPTED; s->result = RESULT_UNKNOWN; s->active = true; s->seen = true;
+  a->accepted_request[slot] = r;
+  a->accepted_sysid[slot] = m->sysid;
+  a->accepted_compid[slot] = m->compid;
   s->command_result = COMMAND_ACCEPTED; s->fault_flags = 0; s->output_enabled = false;
   emit_result(a, &r, s->local_command_id, RESULT_UNKNOWN, STATE_ACCEPTED);
   emit_status(a, slot, true);
@@ -396,10 +446,7 @@ void motor_adapter_poll(motor_adapter_t *a) {
           if (s->state != STATE_RUNNING) {
             s->state = STATE_RUNNING;
             s->command_result = COMMAND_IN_PROGRESS;
-            mavlink_actuator_request_t request = {
-              .request_id = s->request_id, .ground_session = s->ground_session,
-              .actuator = c->actuator
-            };
+            mavlink_actuator_request_t request = a->accepted_request[i];
             emit_result(a, &request, s->local_command_id, RESULT_UNKNOWN, STATE_RUNNING);
           }
           s->last_count = count; s->last_feedback_ms = now;
@@ -423,15 +470,19 @@ void motor_adapter_mailbox_read(motor_adapter_t *a, uint8_t out[MOTOR_MAILBOX_BY
     a->tx_head = (uint8_t)((a->tx_head + 1u) % MOTOR_STATUS_QUEUE_CAPACITY);
     a->tx_count--;
   } else {
-    for (uint8_t attempts = 0; attempts < 4; ++attempts) {
+    for (uint8_t attempts = 0; attempts < 6; ++attempts) {
       uint8_t selected = a->persistent_next;
-      a->persistent_next = (uint8_t)((a->persistent_next + 1u) % 4u);
+      a->persistent_next = (uint8_t)((a->persistent_next + 1u) % 6u);
       if (selected < 2u && a->result_snapshot_valid[selected]) {
         memcpy(out, a->result_snapshot[selected], MOTOR_MAILBOX_BYTES);
         return;
       }
-      if (selected >= 2u && a->snapshot_valid[selected - 2u]) {
+      if (selected < 4u && selected >= 2u && a->snapshot_valid[selected - 2u]) {
         memcpy(out, a->snapshot[selected - 2u], MOTOR_MAILBOX_BYTES);
+        return;
+      }
+      if (selected >= 4u && a->rejected_snapshot_valid[selected - 4u]) {
+        memcpy(out, a->rejected_snapshot[selected - 4u], MOTOR_MAILBOX_BYTES);
         return;
       }
     }

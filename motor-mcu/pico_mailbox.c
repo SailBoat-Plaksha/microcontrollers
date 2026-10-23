@@ -1,6 +1,7 @@
 #include "pico_mailbox.h"
 
 #include "adapter.h"
+#include "../Servo-Chip/include/helpers.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 #include "hardware/sync.h"
@@ -49,15 +50,13 @@
 #ifndef MOTOR_M2_MAX_RATE_CDEG_S
 #define MOTOR_M2_MAX_RATE_CDEG_S 3000
 #endif
-#ifndef MOTOR_FEEDBACK_FRESH_MS
-#define MOTOR_FEEDBACK_FRESH_MS 100
-#endif
 
 typedef struct {
   mState *motors[2];
-  int32_t counts[2];
-  uint32_t feedback_ms[2];
-  bool have_feedback[2];
+  volatile int32_t counts[2];
+  volatile uint8_t encoder_state[2];
+  volatile bool feedback_valid[2];
+  bool drive_active[2];
 } pico_motor_io_t;
 
 static pico_motor_io_t motor_io;
@@ -71,6 +70,48 @@ static volatile bool rx_error_pending;
 static uint8_t tx_frame[MOTOR_MAILBOX_BYTES];
 static uint8_t tx_position;
 static volatile bool tx_loaded;
+static volatile bool tx_read_started;
+
+static int8_t quadrature_delta(uint8_t previous, uint8_t current) {
+  static const int8_t transitions[16] = {
+     0, -1,  1,  0,
+     1,  0,  0, -1,
+    -1,  0,  0,  1,
+     0,  1, -1,  0
+  };
+  return transitions[(previous << 2) | current];
+}
+
+static void encoder_irq_handler(void) {
+  pico_motor_io_t *io = &motor_io;
+  for (int index = 0; index < 2; ++index) {
+    mState *motor = io->motors[index];
+    uint pins[2] = {motor->encoder_pin1, motor->encoder_pin2};
+    for (int pin_index = 0; pin_index < 2; ++pin_index) {
+      uint pin = pins[pin_index];
+      uint32_t events = gpio_get_irq_event_mask(pin);
+      if (!events) continue;
+      gpio_acknowledge_irq(pin, events);
+      uint8_t current = (uint8_t)((gpio_get(motor->encoder_pin1) << 1) |
+                                  gpio_get(motor->encoder_pin2));
+      uint8_t previous = io->encoder_state[index];
+      uint8_t changed = previous ^ current;
+      if (changed == 3u) {
+        /* Both phases changed before service; position is no longer trustworthy. */
+        io->feedback_valid[index] = false;
+      } else if (changed) {
+        int8_t delta = quadrature_delta(previous, current);
+        if (delta == 0 || (delta > 0 && io->counts[index] == INT32_MAX) ||
+            (delta < 0 && io->counts[index] == INT32_MIN)) {
+          io->feedback_valid[index] = false;
+        } else {
+          io->counts[index] += delta;
+        }
+      }
+      io->encoder_state[index] = current;
+    }
+  }
+}
 
 static uint32_t pico_now(void *context) { (void)context; return to_ms_since_boot(get_absolute_time()); }
 
@@ -78,18 +119,21 @@ static int32_t pico_read_count(void *context, uint8_t actuator) {
   pico_motor_io_t *io = context;
   int index = actuator - 1u;
   if (index > 1 || !io->motors[index]) return 0;
-  int delta = encoder_poll(io->motors[index]);
-  io->counts[index] += delta;
-  io->feedback_ms[index] = pico_now(NULL);
-  io->have_feedback[index] = true;
-  return io->counts[index];
+  uint32_t irq_state = save_and_disable_interrupts();
+  int32_t count = io->counts[index];
+  restore_interrupts(irq_state);
+  return count;
 }
 
 static bool pico_feedback_fresh(void *context, uint8_t actuator, uint32_t now) {
   pico_motor_io_t *io = context;
   int index = actuator - 1u;
-  return index < 2 && io->have_feedback[index] &&
-         (uint32_t)(now - io->feedback_ms[index]) <= MOTOR_FEEDBACK_FRESH_MS;
+  (void)now;
+  return index < 2 && io->motors[index] && io->feedback_valid[index];
+}
+
+static void pico_update_standby(pico_motor_io_t *io) {
+  gpio_put(MOTOR_STANDBY_PIN, io->drive_active[0] || io->drive_active[1]);
 }
 
 static void pico_drive(void *context, uint8_t actuator, int direction, uint8_t pwm) {
@@ -97,10 +141,11 @@ static void pico_drive(void *context, uint8_t actuator, int direction, uint8_t p
   int index = actuator - 1u;
   if (index > 1 || !io->motors[index]) return;
   mState *m = io->motors[index];
-  gpio_put(MOTOR_STANDBY_PIN, 1);
   gpio_put(m->forward_pin, direction > 0);
   gpio_put(m->backward_pin, direction < 0);
   pwmWrite(m->pwm_pin, pwm);
+  io->drive_active[index] = true;
+  pico_update_standby(io);
 }
 
 static void pico_stop(void *context, uint8_t actuator) {
@@ -111,7 +156,8 @@ static void pico_stop(void *context, uint8_t actuator) {
   pwmWrite(m->pwm_pin, 0);
   gpio_put(m->forward_pin, 0);
   gpio_put(m->backward_pin, 0);
-  gpio_put(MOTOR_STANDBY_PIN, 0);
+  io->drive_active[index] = false;
+  pico_update_standby(io);
 }
 
 static bool pico_rc_owns(void *context) {
@@ -128,8 +174,16 @@ static void i2c_event(i2c_inst_t *i2c, i2c_slave_event_t event) {
       else rx_overflow = true;
     }
   } else if (event == I2C_SLAVE_REQUEST) {
-    while (tx_loaded && i2c_get_write_available(i2c) && tx_position < MOTOR_MAILBOX_BYTES) {
-      i2c_write_byte_raw(i2c, tx_frame[tx_position++]);
+    tx_read_started = true;
+    if (tx_loaded && i2c_get_write_available(i2c)) {
+      if (tx_position < MOTOR_MAILBOX_BYTES) {
+        i2c_write_byte_raw(i2c, tx_frame[tx_position]);
+        tx_position++;
+      } else {
+        /* One-byte lookahead sentinel: a 64-byte read must request byte 65. */
+        i2c_write_byte_raw(i2c, 0);
+        if (tx_position == MOTOR_MAILBOX_BYTES) tx_position++;
+      }
     }
   } else if (event == I2C_SLAVE_FINISH) {
     if (rx_length || rx_overflow) {
@@ -140,8 +194,11 @@ static void i2c_event(i2c_inst_t *i2c, i2c_slave_event_t event) {
       rx_length = 0;
       rx_overflow = false;
     }
-    tx_position = 0;
-    tx_loaded = false;
+    if (tx_read_started) {
+      if (tx_position > MOTOR_MAILBOX_BYTES) tx_loaded = false;
+      tx_position = 0;
+      tx_read_started = false;
+    }
   }
 }
 
@@ -151,8 +208,24 @@ void motor_mcu_start(mState *sail, mState *rudder) {
   gpio_init(MOTOR_STANDBY_PIN);
   gpio_set_dir(MOTOR_STANDBY_PIN, GPIO_OUT);
   gpio_put(MOTOR_STANDBY_PIN, 0);
+  gpio_add_raw_irq_handler_masked((1u << motor_io.motors[0]->encoder_pin1) |
+                                  (1u << motor_io.motors[0]->encoder_pin2) |
+                                  (1u << motor_io.motors[1]->encoder_pin1) |
+                                  (1u << motor_io.motors[1]->encoder_pin2),
+                                  encoder_irq_handler);
   for (int i = 0; i < 2; ++i) {
     mState *m = motor_io.motors[i];
+    gpio_init(m->encoder_pin1);
+    gpio_init(m->encoder_pin2);
+    gpio_set_dir(m->encoder_pin1, GPIO_IN);
+    gpio_set_dir(m->encoder_pin2, GPIO_IN);
+    gpio_set_input_hysteresis_enabled(m->encoder_pin1, true);
+    gpio_set_input_hysteresis_enabled(m->encoder_pin2, true);
+    motor_io.encoder_state[i] = (uint8_t)((gpio_get(m->encoder_pin1) << 1) |
+                                          gpio_get(m->encoder_pin2));
+    motor_io.feedback_valid[i] = true;
+    gpio_set_irq_enabled(m->encoder_pin1, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+    gpio_set_irq_enabled(m->encoder_pin2, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
     gpio_put(m->forward_pin, 0);
     gpio_put(m->backward_pin, 0);
     pwmWrite(m->pwm_pin, 0);
@@ -177,6 +250,7 @@ void motor_mcu_start(mState *sail, mState *rudder) {
   gpio_set_function(MOTOR_I2C_SCL_PIN, GPIO_FUNC_I2C);
   gpio_pull_up(MOTOR_I2C_SDA_PIN);
   gpio_pull_up(MOTOR_I2C_SCL_PIN);
+  i2c_init(i2c0, 100000u);
   i2c_slave_init(i2c0, MOTOR_MAILBOX_ADDR, i2c_event);
 }
 

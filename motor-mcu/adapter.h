@@ -73,6 +73,12 @@ typedef struct {
   uint32_t current_ground_session;
   uint32_t last_request_id;
   bool have_request_id;
+  mavlink_actuator_request_t last_request;
+  uint8_t last_request_sysid;
+  uint8_t last_request_compid;
+  mavlink_actuator_request_t accepted_request[2];
+  uint8_t accepted_sysid[2];
+  uint8_t accepted_compid[2];
   uint32_t old_ground_sessions[4];
   uint8_t old_session_count;
   uint8_t old_session_next;
@@ -84,6 +90,8 @@ typedef struct {
   uint8_t snapshot_next;
   uint8_t result_snapshot[2][MOTOR_MAILBOX_BYTES];
   bool result_snapshot_valid[2];
+  uint8_t rejected_snapshot[2][MOTOR_MAILBOX_BYTES];
+  bool rejected_snapshot_valid[2];
   uint8_t persistent_next;
 } motor_adapter_t;
 

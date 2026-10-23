@@ -9,15 +9,24 @@ The adapter uses the generated unsigned MAVLink 2 C dialect in
 - `motor_adapter_receive()` validates one zero-padded 64-byte mailbox frame.
 - `motor_adapter_poll()` advances nonblocking moves and refreshes status.
 - `motor_adapter_mailbox_read()` returns the next queued frame or cycles through
-  the two latest correlated request results and two actuator status snapshots.
+  accepted-command results, rejected-request observations, and actuator status
+  snapshots.
 - `motor_adapter_process_message()` supports direct generated-message tests.
 
-Pico firmware starts the I2C0 slave at address `0x08`, uses 100 kHz bus timing
-set by the Pi controller, and receives/sends exactly 64 bytes per mailbox
-transfer. The SDK interrupt callback only copies mailbox bytes and fills the
-prepared transmit buffer. MAVLink parsing and actuator work run from the main
-loop. The demo build disables the USB `ACTUATOR_SETPOINT` motion handler and
-the startup motor sweep.
+Pico firmware initializes I2C0 at 100 kHz before entering slave mode at address
+`0x08` and uses fixed 64-byte mailboxes. The I2C ISR only copies incoming bytes
+and serves a prepared reply. Write-only transactions leave the prepared reply
+untouched. Short reads reset the transmit cursor but retain the reply for a
+complete retry. MAVLink parsing and actuator work run from the main loop. The
+demo build disables the USB `ACTUATOR_SETPOINT` motion handler and the startup
+motor sweep.
+
+Encoder phases use GPIO edge interrupts on the four configured encoder pins.
+The adapter counts both phases and does not sample quadrature from the 10 ms
+service loop. A skipped two-bit transition or count saturation invalidates that
+actuator's feedback and stops an autonomous move. The raw GPIO handler is
+registered only for the encoder pins and coexists with the existing RC GPIO
+callback.
 
 Run the deterministic host executable with:
 
@@ -25,12 +34,15 @@ Run the deterministic host executable with:
 ./motor-mcu/run_host_harness.sh
 ```
 
-For a Pico 2 build, configure with the Raspberry Pi Pico SDK 2.2.0 available
-to CMake, then build `Servo-Chip`. The intended demo is on by default. Angle
-movement stays disabled until encoder reference validity is explicitly set:
+Configure with the Raspberry Pi Pico SDK available to CMake, then build
+`Servo-Chip`. `PICO_BOARD` is selected through the CMake cache and defaults to
+`pico2`; the SDK chooses the matching platform. The intended demo is on by
+default. Angle movement stays disabled until encoder reference validity is
+explicitly set:
 
 ```sh
 cmake -S Servo-Chip -B build-motor \
+  -DPICO_BOARD=pico2 \
   -DMOTOR_M1_REFERENCE_VALID=ON -DMOTOR_M2_REFERENCE_VALID=ON \
   -DMOTOR_M1_ZERO_COUNT=<measured-sail-zero> \
   -DMOTOR_M2_ZERO_COUNT=<measured-rudder-zero> \
@@ -56,11 +68,10 @@ before the RC loop applies its control.
 
 ## Limits
 
-- No Pico SDK or CMake executable was available in the implementation
-  environment, so only the real generated-header host adapter was compiled.
-  Firmware was not built or flashed.
 - Encoder reference is unknown by default. Do not set either reference-valid
   option until zero count and output-shaft counts per revolution are measured.
+- `NODE_HEALTH.feedback_valid` is deliberately conservative and becomes true
+  only when both actuator references and both encoder captures are valid.
 - Rate limiting uses encoder feedback to pause output above the requested rate
   and a PWM cap. Driver, motor and load calibration is still needed to prove a
   physical angular-rate bound.
@@ -79,3 +90,9 @@ before the RC loop applies its control.
 - Host tests cover the adapter and generated codec. They do not prove I2C
   electrical timing, real encoder calibration, motor movement, RC takeover or
   watchdog behavior.
+
+`run_host_harness.sh` also compiles `host_stdio.c` and runs
+`host_integration.py`. The line-based host interface accepts `NOW`, `COUNT`,
+`FRESH`, `RC`, and `POLL` controls, plus `ENCODE`/`RX`/`READ` commands for
+generated MAVLink requests and raw 64-byte frames. This drives the actual C
+adapter through its public frame API for external host scenarios.

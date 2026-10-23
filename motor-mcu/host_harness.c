@@ -78,6 +78,7 @@ int main(void) {
   motor_adapter_t a;
   motor_adapter_init(&a, &io, cfg, 0x12345678);
   uint8_t frame[MOTOR_MAILBOX_BYTES];
+  uint8_t stale_state;
 
   cfg[0].reference_valid = false;
   motor_adapter_init(&a, &io, cfg, 1);
@@ -99,10 +100,17 @@ int main(void) {
   assert(a.state[0].target_cdeg == 4500 && a.state[0].active);
   motor_adapter_poll(&a);
   assert(f.drive_count == 1 && f.last_direction == 1);
+  assert(decode_result_state(a.result_snapshot[0], &stale_state) && stale_state == 3);
   request(&a, 10, 1, 1, 1, 4500, 1000, 3, 1, 1, 1); /* duplicate */
   assert(a.next_command_id == 2 && f.drive_count == 1);
   request(&a, 10, 1, 2, 1, 9000, 1000, 3, 1, 1, 1); /* same ID cannot target another actuator */
   assert(!a.state[1].active && a.next_command_id == 2);
+  assert(decode_result_state(a.result_snapshot[0], &stale_state) && stale_state == 3);
+  assert(decode_result_state(a.rejected_snapshot[1], &stale_state) && stale_state == 6);
+  request(&a, 10, 1, 1, 1, 4600, 1000, 3, 1, 1, 1); /* altered duplicate envelope */
+  assert(a.state[0].target_cdeg == 4500);
+  assert(decode_result_state(a.result_snapshot[0], &stale_state) && stale_state == 3);
+  assert(decode_result_state(a.rejected_snapshot[0], &stale_state) && stale_state == 6);
   request(&a, 10, 2, 1, 1, 9000, 1000, 3, 1, 1, 1); /* busy motor cannot be restarted */
   assert(a.state[0].active && a.state[0].request_id == 1 && a.next_command_id == 2);
   request(&a, 10, 0, 1, 2, 500, 1000, 3, 1, 1, 1); /* reordered */
@@ -132,13 +140,14 @@ int main(void) {
   assert(f.drive_count == drives_before);
   f.rc = false;
   request(&a, 10, 99, 1, 1, 9000, 5000, 3, 1, 1, 1); /* superseded session never replays */
-  uint8_t stale_state;
-  assert(decode_result_state(a.result_snapshot[0], &stale_state) && stale_state == 6);
+  assert(decode_result_state(a.rejected_snapshot[0], &stale_state) && stale_state == 6);
 
   /* STOP is accepted and distinct from an absolute zero target. */
   a.tx_count = 0;
+  a.state[1].velocity_cdeg_s = 875;
   request(&a, 13, 1, 2, 3, 0, 0, 3, 1, 1, 1);
   assert(a.state[1].state == 5 && !a.state[1].active);
+  assert(!a.state[1].output_enabled && a.state[1].velocity_cdeg_s == 0);
   assert(queued_msgid(&a, frame) == MAVLINK_MSG_ID_REQUEST_RESULT);
 
   /* Deadline ends the move without a late/replayed drive. */
@@ -201,7 +210,25 @@ int main(void) {
   request(&a, 16, 2, 2, 1, 1000, 1000, 3, 1, 1, 1);
   uint8_t terminal_state;
   assert(f.drive_count == rejected_before);
-  assert(decode_result_state(a.result_snapshot[1], &terminal_state) && terminal_state == 6);
+  assert(decode_result_state(a.rejected_snapshot[1], &terminal_state) && terminal_state == 6);
+  assert(a.tx_count == MOTOR_STATUS_QUEUE_CAPACITY && a.queue_drops > 0);
+
+  /* Request IDs do not wrap inside a ground session; a new session is required. */
+  motor_adapter_t wrap_adapter;
+  motor_adapter_init(&wrap_adapter, &io, cfg, 3);
+  wrap_adapter.current_ground_session = 77;
+  wrap_adapter.have_request_id = true;
+  wrap_adapter.last_request_id = UINT32_MAX;
+  request(&wrap_adapter, 77, 1, 1, 1, 1000, 1000, 3, 1, 1, 1);
+  assert(!wrap_adapter.state[0].active && wrap_adapter.next_command_id == 1);
+  assert(decode_result_state(wrap_adapter.rejected_snapshot[0], &terminal_state) && terminal_state == 6);
+
+  /* Local command identifiers stop before uint32 rollover. */
+  motor_adapter_t command_wrap;
+  motor_adapter_init(&command_wrap, &io, cfg, 4);
+  command_wrap.next_command_id = UINT32_MAX;
+  request(&command_wrap, 1, 1, 1, 1, 1000, 1000, 3, 1, 1, 1);
+  assert(!command_wrap.state[0].active && command_wrap.next_command_id == UINT32_MAX);
   printf("motor adapter scenarios: PASS (reference, absolute, STEP, duplicate/reorder/cross-actuator, RC, STOP, deadline, source/authority/target, CRC, bounded queue, persistent snapshot, ping, request states)\n");
   return 0;
 }
