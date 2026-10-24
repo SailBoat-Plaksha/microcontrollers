@@ -163,7 +163,7 @@ def build_ui(ui):
             with ui.row().classes("w-full flex-wrap items-end gap-3"):
                 mode = ui.select(["LoRa · direct USB UART", "LoRa · ground Pico USB (raw MAVLink)",
                                   "SSH · Pi bridge",
-                                  "SIMULATION · generated values"], value="SIMULATION · generated values",
+                                  "SIMULATION · generated values"], value="LoRa · direct USB UART",
                                  label="Transport").classes("w-64")
                 port = ui.input("USB serial port", value="/dev/ttyUSB0").classes("w-56")
                 baud = ui.number("Baud", value=115200, min=1200, max=3000000, precision=0).classes("w-36")
@@ -207,7 +207,7 @@ def build_ui(ui):
                 with ui.row().classes("w-full flex-wrap items-stretch"):
                     for key, title in (((1, 1), "Pi · router / IMU"),
                                        ((1, 154), "Motor Pico"),
-                                       ((1, 158), "Sensors / comms Pico")):
+                                       ((1, 158), "Comms Pico (optional)")):
                         with ui.card().classes("grow basis-52 min-w-0"):
                             ui.label(title).classes("font-medium")
                             node_labels[key] = ui.label("No heartbeat/status").classes("whitespace-pre-wrap text-sm")
@@ -287,6 +287,9 @@ def build_ui(ui):
                     motor_text.set_text(f"{('Sail' if selected_actuator == 1 else 'Rudder')}: no measured status; movement disabled." +
                                         ("\nSIMULATION MODE" if simulation else ""))
                 for source, label in node_labels.items():
+                    if source == (1, 158) and STATE.mode.startswith("LoRa · direct USB UART"):
+                        label.set_text("Not used in direct USB-UART mode")
+                        continue
                     node = STATE.nodes.get(source, {})
                     age = max(0.0, now - node.get("seen", now))
                     health = node.get("health")
@@ -334,11 +337,17 @@ def build_ui(ui):
                                                for item in reversed(recent_trace)) or "Waiting for events.")
 
         def connect_selected():
-            settings = {"local_address": int(local_address.value),
-                        "peer_address": int(peer_address.value),
-                        "network_id": int(network_id.value),
-                        "band_hz": int(band_hz.value) if str(band_hz.value).strip() else None,
-                        "parameter": str(parameter.value).strip()}
+            settings = None
+            if mode.value == "LoRa · direct USB UART":
+                try:
+                    settings = {"local_address": int(local_address.value),
+                                "peer_address": int(peer_address.value),
+                                "network_id": int(network_id.value),
+                                "band_hz": int(band_hz.value) if str(band_hz.value).strip() else None,
+                                "parameter": str(parameter.value).strip()}
+                except (TypeError, ValueError):
+                    ui.notify("Check modem addresses, network ID and frequency.", type="negative")
+                    return
             _call_background(_connect, mode.value, port.value, baud.value, host.value, settings)
         connect_btn.on_click(connect_selected)
         disconnect_btn.on_click(lambda: _call_background(_disconnect))
