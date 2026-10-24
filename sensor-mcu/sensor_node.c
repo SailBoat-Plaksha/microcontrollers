@@ -244,7 +244,9 @@ static void handle_pi_sample(sensor_node_t *node,
         !sample.acquisition_boot_id ||
         sample.source_boot_id != sample.acquisition_boot_id ||
         (sample.valid_fields & ~7u) ||
-        (sample.status != 1 && sample.valid_fields)) {
+        (sample.status != 1 && sample.valid_fields) ||
+        (pi_boot_id && pi_boot_id == sample.acquisition_boot_id &&
+         (int32_t)(sample.sample_seq - pi_seq) < 0)) {
         node->rejected++;
         return;
     }

@@ -30,8 +30,31 @@ int main(void){sensor_node_t n;sensor_config_t c={clock_fn,NULL,0x1234,10,0,1};s
     /* Session-zero local API produces a Pi-bound dependency and Pi-bound result. */
     assert(sensor_node_request_local(&n,90,50,0));assert(sensor_node_take_tx(&n,b));parse(b,&m);mavlink_msg_imu_request_decode(&m,&r);assert(m.sysid==1&&m.compid==159&&r.ground_session==0&&r.path==0&&r.target_system==1&&r.target_component==1);
     mavlink_msg_imu_sample_pack(1,1,&m,0,90,500,12,987,987,0,1,9,8,7,0,0,0,0,0,0,1,0,1,1,159);frame(&m,b);now_ms=120;assert(sensor_node_receive(&n,b));assert(sensor_node_take_tx(&n,b));parse(b,&m);mavlink_msg_imu_sample_decode(&m,&s);assert(s.ground_session==0&&s.path==1&&s.target_system==1&&s.target_component==1&&s.source_boot_id==0x1234);
-    /* Real callback byte path: short read retries from byte zero, full 64 consumes, overread is zero. */
-    sensor_mailbox_t mb;sensor_mailbox_init(&mb);memset((void*)mb.tx,0xA5,64);mb.tx_available=true;i2c_inst_t bus={0};sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);assert(bus.output[0]==0xA5);sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);bus.output_len=bus.input_pos=0;for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);assert(bus.output[0]==0xA5&&bus.output[64]==0);sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(!mb.tx_available);
-    /* A complete write is staged by ISR and parsed only by main-loop service. */
-    mavlink_msg_imu_request_pack(1,1,&m,42,11,30,0,1,1,159);frame(&m,b);bus.input=b;bus.input_len=64;bus.input_pos=0;for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_RECEIVE);sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(mb.rx_ready);sensor_mailbox_service(&mb,&n);assert(!mb.rx_ready);
+    /* An older Pi acquisition from the same boot cannot roll cached freshness back. */
+    assert(sensor_node_request_local(&n,91,50,0));assert(sensor_node_take_tx(&n,b));
+    mavlink_msg_imu_sample_pack(1,1,&m,0,91,499,11,987,987,0,1,1,2,3,4,5,6,7,8,9,1,0,1,1,159);frame(&m,b);
+    uint32_t stale_rejected=n.rejected;assert(sensor_node_receive(&n,b));assert(n.rejected==stale_rejected+1);assert(!sensor_node_take_tx(&n,b));
+    /* Once the 2 s cache expires, even a permissive max-age request asks Pi for fresh data. */
+    now_ms=2121;assert(sensor_node_request_local(&n,92,50,65535));assert(sensor_node_take_tx(&n,b));parse(b,&m);
+    assert(m.msgid==MAVLINK_MSG_ID_IMU_REQUEST);mavlink_msg_imu_request_decode(&m,&r);assert(r.ground_session==0&&r.request_id==92&&r.max_age_ms==0);
+    /* The actual callback latches a reply for each transaction. A short read
+     * and a write-only STOP leave it prepared; a full read consumes it. */
+    sensor_mailbox_t mb;sensor_mailbox_init(&mb);memset((void*)mb.tx,0xA5,64);mb.tx_available=true;i2c_inst_t bus={0};
+    for(int i=0;i<7;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);
+    sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(mb.tx_available);
+    mavlink_msg_imu_request_pack(1,1,&m,42,11,30,0,1,1,159);frame(&m,b);bus.input=b;bus.input_len=64;bus.input_pos=0;bus.output_len=0;
+    for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_RECEIVE);
+    sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(mb.rx_ready&&mb.tx_available);
+    bus.input=NULL;bus.input_len=bus.input_pos=bus.output_len=0;
+    for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);
+    sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);assert(bus.output[0]==0xA5&&bus.output[64]==0);
+    sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(!mb.tx_available);
+    /* An unready read stays zero even if a reply is prepared mid-transaction. */
+    mb.tx_available=false;bus.output_len=0;sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);memset((void*)mb.tx,0x5A,64);mb.tx_available=true;sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);assert(bus.output[0]==0&&bus.output[1]==0);sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(mb.tx_available);
+    /* Repeated-start write then read finalizes both phases at the single STOP. */
+    memset((void*)mb.tx,0x3C,64);mb.tx_available=true;bus.input=b;bus.input_len=64;bus.input_pos=0;bus.output_len=0;
+    for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_RECEIVE);
+    for(int i=0;i<64;i++)sensor_mailbox_callback(&bus,I2C_SLAVE_REQUEST);
+    sensor_mailbox_callback(&bus,I2C_SLAVE_FINISH);assert(mb.rx_ready&&!mb.tx_available&&bus.output_len==64&&bus.output[0]==0x3C);
+    sensor_mailbox_service(&mb,&n);assert(!mb.rx_ready);
     puts("sensor host tests: PASS");return 0;}

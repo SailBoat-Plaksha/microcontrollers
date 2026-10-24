@@ -23,7 +23,7 @@ For an incoming ground `IMU_REQUEST` (source 255/190, path 1, destination Pi 1/1
 
 The public C API also exposes `sensor_node_request_local(node, request_id, timeout_ms, max_age_ms)`. It reserves session 0 for board-local use, queues an equivalent Pi dependency, and routes its result back to Pi 1/1. Ground session 0 is rejected on the mailbox path.
 
-The IRQ callback only stages complete writes and serves bytes from a prepared reply. The main loop parses and advances requests. Short reads retain the staged reply from byte zero; a complete 64-byte read consumes it; additional bytes are zero. This behavior is covered by the host callback test.
+The IRQ callback only stages complete writes and serves bytes from a prepared reply. The main loop parses and advances requests. A STOP finalizes receive and read phases independently so a repeated-start write/read transaction works. Short reads retain the staged reply from byte zero; write-only transactions do not consume it; a complete 64-byte read consumes it; additional bytes are zero, including when the transaction began before a reply was ready. The host callback tests exercise these actual callback sequences.
 
 ## Host build and integration harness
 
@@ -33,13 +33,20 @@ Run host tests and build the stdio harness:
 sensor-mcu/host/run.sh
 ```
 
-The executable is written to `${TMPDIR:-/tmp}/sensor-mcu-host/sensor-harness`. Its line protocol is:
+The executable is written to `${TMPDIR:-/tmp}/sensor-mcu-host/sensor-harness`. Its line protocol is strict: exactly 128 hex digits after `I `, an unsigned decimal absolute time after `T `, or exactly `O`:
 
 ```text
 I <128 hexadecimal characters>  # inject exactly one 64-byte mailbox write
 T <absolute_ms>                  # advance injected clock and run main-loop service
 O                                # fetch one queued 64-byte reply as 128 lowercase hex characters
 ```
+
+`O` reads the prepared mailbox bytes through the actual callback and completes
+the transaction with `FINISH`; it does not remove a node queue frame behind
+the mailbox transport. `host/run.sh` also runs the stdio regression for
+dependency and result frames. The production router/client plus compiled
+sensor callback integration scenario is documented in
+[`../scenarios/sensor_board.md`](../scenarios/sensor_board.md).
 
 The harness is built from the same public C node API and mailbox callback used by firmware. It can be driven from Python over stdin/stdout and does not require Pico hardware.
 
