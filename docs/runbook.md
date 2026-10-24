@@ -55,16 +55,18 @@ A scenario marked `PENDING` is unfinished, and makes the runner exit nonzero. Th
 
 ## Pi setup and real launch
 
+The current bench uses direct UART modems at both ends. Follow [direct-radio setup](direct-radio.md); neither radio hop needs a Pico gateway.
+
 The Pi service and bridge access the real configured I2C controller. Do not run these commands as part of the software-only checks. First install the Pi requirements and prepare `/etc/arsem/onboard.toml` from `onboard/config.example.toml`. Confirm the selected Linux I2C bus number, 100 kHz controller clock, peer addresses, wiring, and device presence. Keep IMU disabled until its exact model, register layout, byte order, and scale factors are known. The example configuration is not hardware calibration.
 
-Install and launch the continuous Pi service:
+Install the Pi dependencies and launch the direct-radio service:
 
 ```sh
 python3 -m pip install -r onboard/requirements.txt
-python3 -m onboard serve --config /etc/arsem/onboard.toml
+python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
 
-The service has one process-wide bus lock. Run either `serve` or `bridge` at a time. The SSH bridge command for the ground station is:
+The service has one process-wide bus lock. Run one of `radio`, legacy `serve`, or `bridge` at a time. The SSH bridge command for the ground station is:
 
 ```sh
 python3 -m onboard bridge --config /etc/arsem/onboard.toml
@@ -85,13 +87,13 @@ PYTHON
 
 Configure the GUI SSH host field with a local SSH config alias whose key authentication and host key are already set up. The GUI uses the fixed bridge command above; it does not accept a shell command. The bridge sends MAVLink bytes on stdout and logs on stderr.
 
-For a real ground Pico/LoRa connection, select the LoRa USB serial transport in the GUI or use the CLI:
+For a direct USB-UART modem connection, select **LoRa · direct USB UART** in the GUI or use the CLI:
 
 ```sh
-python3 -m groundstation.cli --serial /dev/ttyACM0 --baud 115200
+python3 -m groundstation.cli --lora /dev/ttyUSB0 --baud 115200
 ```
 
-Set the device path and baud to match the attached gateway. This sends real radio traffic and must only be used after matching both RYLR998 configurations, UART wiring/levels, antenna, and power requirements. A successful process start does not establish radio exchange or range.
+Set the device path and baud to match the attached USB-UART adapter. The optional ground-Pico gateway uses the separate raw MAVLink mode and CLI `--serial`. This sends real radio traffic and must only be used after matching both RYLR998 configurations, UART wiring/levels, antenna, and power requirements. A successful process start does not establish radio exchange or range.
 
 ## Firmware configuration
 

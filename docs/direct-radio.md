@@ -6,6 +6,34 @@ Laptop NiceGUI/CLI -> USB-UART adapter -> RYLR998 -> radio -> RYLR998 -> Pi UART
 
 Neither radio hop requires a Pico gateway. The existing comms-Pico and ground-Pico firmware remain optional alternatives. The Pi remains the only I2C controller. Motor message definitions, request/session validation, STOP, bounded moves and RC protections do not change.
 
+## Start the bench
+
+Install the laptop dependencies from `groundstation/requirements.txt` and Pi dependencies from `onboard/requirements.txt`. Run from this checkout, or make it importable as described in [runbook](runbook.md).
+
+On the Pi, connect the receiving modem to its 3.3 V UART or a USB-UART adapter, then run:
+
+```sh
+python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+```
+
+Use the Pi adapter's actual `/dev/ttyUSB*` path instead of `/dev/serial0` when applicable. For GPIO UART, disable the Linux serial login console and enable the hardware UART first. Direct mode ignores the optional comms-Pico address 0x09 even if the older config enables it. Only the motor Pico and configured IMU use I2C.
+
+On the laptop, connect the transmitting modem through a 3.3 V USB-UART adapter and start the GUI:
+
+```sh
+groundstation/.venv/bin/python -m groundstation.app
+```
+
+Open `http://127.0.0.1:8080`, select **LoRa · direct USB UART**, set the adapter port (default `/dev/ttyUSB0`) and 115200 baud, then Connect. The equivalent CLI is:
+
+```sh
+python3 -m groundstation.cli --lora /dev/ttyUSB0 --baud 115200
+```
+
+The laptop configures local address 2 and peer 1; the Pi configures local 1 and peer 2. Both use network 18 and parameters `10,7,1,12`. Set both modules to the same frequency; a blank GUI frequency / omitted `--band-hz` preserves the module's existing band. Neither end automatically detects radio settings or falls back to another transport.
+
+Start with Ping and returned motor health/status. A local modem `+OK` is not a motor execution report. Movement remains disabled until valid, fresh motor feedback is reported. Encoder references and the existing RC/standby pin conflict still need hardware resolution before motion; [hardware checklist](hardware-checklist.md).
+
 ## Shared host modem interface
 
 `boat.radio.LoRaModemTransport` implements the existing `Transport` API:

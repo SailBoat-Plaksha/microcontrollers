@@ -28,6 +28,6 @@ Screenshots are in `/tmp` and are not committed to the repository:
 
 This verifies the NiceGUI browser flow, direct-radio factory wiring, real `LoRaModemTransport` behavior against a fake UART, codec framing, and UI rendering against generated peer responses only. It does not verify physical USB-UART, either RYLR998, RF compatibility/range, Pi UART, real Pi motor-health replies, I2C, motor motion, or site regulations. The known callback ACK bug did not reproduce in this fixture run. No product tests were added or run.
 
-## QA verdict
+## Follow-up
 
-**SHIP WITH FIXES** for this focused browser pass: direct-mode flow and layout worked; replace raw constructor `ValueError` details for invalid address/frequency with friendly setting validation feedback before treating the invalid-settings check as passed.
+The direct-mode flow and responsive layout passed. The invalid address/frequency copy was corrected after this browser run in `13c07cc`, and a regression test in `groundstation/tests/test_app.py` exercises the actual driver constructor and UI background error handling before any serial port opens. Both messages now use the UI field names and omit Python exception names. That error-text change was verified by the headless test; the browser screenshots above show the earlier revision.
