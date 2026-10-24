@@ -7,6 +7,7 @@ import queue
 import time
 
 from boat.client import BoatClient
+from boat.radio import LoRaModemTransport
 from .state import STATE, TransportLog
 from .transports import SerialTransport, SimulationTransport, SSHTransport
 
@@ -14,6 +15,8 @@ _WORKERS = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_pref
 _ACTION_LOCK = __import__("threading").Lock()
 TRANSPORT_FACTORIES = {
     "serial": lambda port, baud: SerialTransport(port, int(baud)),
+    "direct_radio": lambda port, baud, **settings: LoRaModemTransport(
+        port, int(baud), **settings),
     "ssh": lambda alias, _baud: SSHTransport(alias),
     "simulation": lambda _port, _baud: SimulationTransport(),
 }
@@ -26,7 +29,7 @@ def set_transport_factory(kind, factory):
     simulator; replacement objects still carry raw frames through BoatClient.
     """
     if kind not in TRANSPORT_FACTORIES:
-        raise ValueError("transport kind must be serial, ssh, or simulation")
+        raise ValueError("transport kind must be serial, direct_radio, ssh, or simulation")
     if not callable(factory):
         raise TypeError("factory must be callable")
     TRANSPORT_FACTORIES[kind] = factory
@@ -49,7 +52,7 @@ def _call_background(fn, *args):
     return _WORKERS.submit(run)
 
 
-def _connect(mode, port, baud, ssh_host):
+def _connect(mode, port, baud, ssh_host, radio_settings=None):
     with _ACTION_LOCK:
         with STATE.lock:
             old_client = STATE.client
@@ -74,10 +77,14 @@ def _connect(mode, port, baud, ssh_host):
             with STATE.lock:
                 STATE.connected = False
                 STATE.client = None
-        key, first = (("serial", port) if mode.startswith("LoRa") else
+        key, first = (("direct_radio", port) if mode.startswith("LoRa · direct USB UART") else
+                      ("serial", port) if mode.startswith("LoRa") else
                       ("ssh", ssh_host) if mode.startswith("SSH") else
                       ("simulation", port))
-        transport = TRANSPORT_FACTORIES[key](first, baud)
+        if key == "direct_radio":
+            transport = TRANSPORT_FACTORIES[key](first, baud, **(radio_settings or {}))
+        else:
+            transport = TRANSPORT_FACTORIES[key](first, baud)
         client = BoatClient(transport)
         unsubscribe = client.subscribe(lambda event, owner=client: STATE.enqueue(event, owner))
         with STATE.lock:
@@ -154,10 +161,11 @@ def build_ui(ui):
         with ui.card().classes("w-full"):
             ui.label("Connection").classes("text-lg font-medium")
             with ui.row().classes("w-full flex-wrap items-end gap-3"):
-                mode = ui.select(["LoRa · ground Pico USB", "SSH · Pi bridge",
+                mode = ui.select(["LoRa · direct USB UART", "LoRa · ground Pico USB (raw MAVLink)",
+                                  "SSH · Pi bridge",
                                   "SIMULATION · generated values"], value="SIMULATION · generated values",
                                  label="Transport").classes("w-64")
-                port = ui.input("USB serial port", value="/dev/ttyACM0").classes("w-56")
+                port = ui.input("USB serial port", value="/dev/ttyUSB0").classes("w-56")
                 baud = ui.number("Baud", value=115200, min=1200, max=3000000, precision=0).classes("w-36")
                 host = ui.input("SSH config host alias", value="boat-pi").classes("w-56")
                 connect_btn = ui.button("Connect", color="primary")
@@ -166,6 +174,14 @@ def build_ui(ui):
                 disconnect_btn.disable()
                 ping_btn.disable()
             ui.label("SSH uses ~/.ssh/config, strict host key checking, and python3 -m onboard bridge --config /etc/arsem/onboard.toml.").classes("text-xs text-slate-600")
+            with ui.expansion("Direct radio settings", icon="settings"):
+                ui.label("Configure both modems to the same network, frequency, and parameters. Blank frequency leaves the modem's current band unchanged.").classes("text-xs text-slate-600")
+                with ui.row().classes("w-full flex-wrap items-end gap-3"):
+                    local_address = ui.number("Local modem address", value=2, min=0, max=65535, precision=0).classes("w-44")
+                    peer_address = ui.number("Expected boat modem peer", value=1, min=0, max=65535, precision=0).classes("w-48")
+                    network_id = ui.number("Network ID", value=18, min=3, max=18, precision=0).classes("w-36")
+                    band_hz = ui.input("Band frequency Hz (optional)", value="").classes("w-56")
+                    parameter = ui.input("RF parameters (SF,BW,CR,preamble)", value="10,7,1,12").classes("w-64")
 
         with ui.row().classes("w-full flex-wrap items-stretch"):
             with ui.card().classes("grow basis-80 min-w-0"):
@@ -246,7 +262,8 @@ def build_ui(ui):
                 disconnect_btn.set_enabled(connected)
                 ping_btn.set_enabled(connected)
                 stop_btn.set_enabled(connected)
-                for field in (mode, port, baud, host):
+                for field in (mode, port, baud, host, local_address, peer_address,
+                              network_id, band_hz, parameter):
                     field.set_enabled(not connected)
                 selected_actuator = int(actuator.value)
                 selected_report = STATE.motor_reports.get(selected_actuator)
@@ -316,8 +333,14 @@ def build_ui(ui):
                                     "\n".join(json.dumps(item, default=str, separators=(",", ":"))
                                                for item in reversed(recent_trace)) or "Waiting for events.")
 
-        connect_btn.on_click(lambda: _call_background(_connect, mode.value, port.value,
-                                                       baud.value, host.value))
+        def connect_selected():
+            settings = {"local_address": int(local_address.value),
+                        "peer_address": int(peer_address.value),
+                        "network_id": int(network_id.value),
+                        "band_hz": int(band_hz.value) if str(band_hz.value).strip() else None,
+                        "parameter": str(parameter.value).strip()}
+            _call_background(_connect, mode.value, port.value, baud.value, host.value, settings)
+        connect_btn.on_click(connect_selected)
         disconnect_btn.on_click(lambda: _call_background(_disconnect))
         ping_btn.on_click(lambda: _call_background(_client_action, "ping_all"))
         absolute_btn.on_click(lambda: _call_background(_client_action, "set_absolute_angle",

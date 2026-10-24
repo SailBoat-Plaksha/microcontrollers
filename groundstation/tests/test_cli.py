@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 
+from groundstation import cli
 from groundstation.cli import parse_step
 
 
@@ -14,6 +16,16 @@ class CliTests(unittest.TestCase):
                       ["step", "5", "2", "extra"]):
             with self.subTest(parts=parts), self.assertRaises(ValueError):
                 parse_step(parts, 5.0)
+
+    def test_lora_cli_selects_direct_modem_and_passes_explicit_settings(self):
+        args = cli.build_parser().parse_args(["--lora", "/dev/ttyUSB0", "--baud", "57600",
+            "--local-address", "7", "--peer-address", "9", "--network-id", "18",
+            "--parameter", "9,7,1,12", "--band-hz", "915000000"])
+        sentinel = object()
+        with patch.object(cli, "LoRaModemTransport", return_value=sentinel) as constructor:
+            self.assertIs(cli.make_transport(args), sentinel)
+        constructor.assert_called_once_with("/dev/ttyUSB0", 57600, local_address=7,
+            peer_address=9, network_id=18, band_hz=915000000, parameter="9,7,1,12")
 
 
 if __name__ == "__main__":
