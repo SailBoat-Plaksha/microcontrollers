@@ -19,7 +19,12 @@ python3 -m onboard bridge --config /etc/arsem/onboard.toml
 
 # Direct laptop USB-UART -> LoRa -> boat LoRa -> Pi UART; no comms Pico access.
 python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+
+# Named entry point for the main Raspberry Pi boat-brain process.
+python3 -m onboard.boat_brain --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
+
+`onboard.boat_brain` is a named launcher for the production direct-radio service, not a second router. It opens the configured I2C bus once, validates incoming MAVLink and applies the existing source/target/session/STOP checks, routes accepted requests to the configured I2C peers, polls their status plus the optional Pi-owned IMU, then sends returned MAVLink telemetry through the Pi's RYLR998 UART. `--simulate` is host-only and labels generated values; it does not open hardware.
 
 Direct radio mode lazily imports the shared `boat.radio.LoRaModemTransport` and
 uses its frozen constructor:
