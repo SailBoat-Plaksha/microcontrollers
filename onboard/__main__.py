@@ -120,7 +120,7 @@ def _make_radio_transport(args: argparse.Namespace, transport_factory=None):
 
 def _run_radio_service(router: BoatRouter, transport, stopping, *, sleep=time.sleep,
                        incoming_limit: int = 32, outgoing_limit: int = 128) -> None:
-    """Bridge modem callbacks to the single Pi scheduler without callback I2C."""
+    """Bridge the modem to the single Pi scheduler without blocking its I2C loop."""
     incoming: queue.Queue[bytes] = queue.Queue(maxsize=incoming_limit)
     outgoing: queue.Queue[bytes] = queue.Queue(maxsize=outgoing_limit)
     disconnect_reason = "radio disconnected; unsent movement cancelled before reconnect"
@@ -167,14 +167,39 @@ def _run_radio_service(router: BoatRouter, transport, stopping, *, sleep=time.sl
             print(f"radio: {line}", file=sys.stderr, flush=True)
 
     router.on_frame = send
+    writer_stop = threading.Event()
+    writer_failed = threading.Event()
+    writer: threading.Thread | None = None
+
+    def write_radio() -> None:
+        while not writer_stop.is_set():
+            try:
+                response = outgoing.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if writer_stop.is_set():
+                return
+            try:
+                # send_frame waits for the modem's +OK. Keep that wait off the
+                # scheduler thread; a failed/ambiguous frame is never replayed.
+                transport.send_frame(response)
+            except Exception as exc:
+                print(f"radio send failed; outcome may be unknown: {exc}",
+                      file=sys.stderr, flush=True)
+                print("radio writer stopped; reconnect required", file=sys.stderr, flush=True)
+                writer_failed.set()
+                return
+
     try:
         transport.open(receive)
         print("direct radio connected", file=sys.stderr, flush=True)
+        writer = threading.Thread(target=write_radio, name="onboard-radio-tx")
+        writer.start()
         delay = router.config.poll_interval_ms / 1000.0
-        while not stopping():
+        while not stopping() and not writer_failed.is_set():
             report_modem_errors()
             if not transport.is_connected:
-                print("radio disconnected", file=sys.stderr, flush=True)
+                print("radio disconnected; reconnect required", file=sys.stderr, flush=True)
                 break
             # Admit the already-buffered burst before one scheduler tick, so a
             # queued STOP reaches the router's priority queue before a pending
@@ -186,29 +211,26 @@ def _run_radio_service(router: BoatRouter, transport, stopping, *, sleep=time.sl
                     break
                 router.submit_frame(frame, ingress="radio")
             router.step()
-            # A slow UART must not monopolize this scheduler pass: continue
-            # polling the motor (including the STOP path) every iteration.
-            for _index in range(min(outgoing.qsize(), 8)):
-                try:
-                    response = outgoing.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    transport.send_frame(response)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    print(f"radio send failed; outcome may be unknown: {exc}",
-                          file=sys.stderr, flush=True)
-                    return
             sleep(delay)
     finally:
-        removed = router.cancel_unsent_motion(disconnect_reason)
-        if removed:
-            print(f"cancelled {removed} unsent movement request(s)", file=sys.stderr, flush=True)
+        writer_stop.set()
         try:
-            transport.close()
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(f"radio close failed: {exc}", file=sys.stderr, flush=True)
-        router.on_frame = previous_on_frame
+            removed = router.cancel_unsent_motion(disconnect_reason)
+            if removed:
+                print(f"cancelled {removed} unsent movement request(s)", file=sys.stderr, flush=True)
+        finally:
+            try:
+                transport.close()
+            except Exception as exc:
+                print(f"radio close failed: {exc}", file=sys.stderr, flush=True)
+            try:
+                if writer is not None:
+                    # Closing the modem first releases an in-flight send_frame
+                    # waiting for +OK; joining before close could hold shutdown
+                    # for its timeout.
+                    writer.join()
+            finally:
+                router.on_frame = previous_on_frame
 
 
 def _run_bridge(router: BoatRouter, stopping) -> None:

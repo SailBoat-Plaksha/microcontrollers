@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 import queue
 import io
+import threading
 from contextlib import redirect_stderr
 
 from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_BOAT, SYSTEM_GROUND
@@ -16,6 +17,7 @@ from protocol import codec
 from onboard import BoatRouter, IMURegisterConfig, ServiceConfig, SimulatedBus
 from onboard.__main__ import (_enqueue_radio, _enqueue_stdout, _make_radio_transport,
                               _run_radio_service)
+from boat.radio import LoRaModemTransport
 
 
 class Clock:
@@ -27,6 +29,51 @@ class Clock:
 
     def advance(self, seconds=0.02):
         self.value += seconds
+
+
+class BlockingAckSerial:
+    """Small serial fake that ACKs configuration and holds AT+SEND ACKs."""
+
+    def __init__(self, *args, **kwargs):
+        self.rx = bytearray()
+        self.pending = bytearray()
+        self.cv = threading.Condition()
+        self.closed = False
+        self.send_started = threading.Event()
+
+    def read(self, count):
+        with self.cv:
+            if not self.rx and not self.closed:
+                self.cv.wait(0.05)
+            data = bytes(self.rx[:count])
+            del self.rx[:count]
+            return data
+
+    def write(self, data):
+        data = bytes(data)
+        with self.cv:
+            self.pending.extend(data)
+            while b"\n" in self.pending:
+                line, rest = self.pending.split(b"\n", 1)
+                self.pending = bytearray(rest)
+                if line.startswith(b"AT+SEND="):
+                    self.send_started.set()
+                else:
+                    self.rx.extend(b"+OK\r\n")
+            self.cv.notify_all()
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        with self.cv:
+            self.closed = True
+            self.cv.notify_all()
+
+
+def radio_stop(request_id=1):
+    return ground_request(request_id=request_id, opcode=3, delta=0)
 
 
 def ground_request(request_id=1, opcode=2, delta=500, session=123, actuator=1):
@@ -305,17 +352,119 @@ class RouterTests(unittest.TestCase):
         router = BoatRouter(bus, cfg, clock=self.clock)
         router._last_heartbeat = self.clock() - 1.1
         sent = []
+        sent_event = threading.Event()
         active = [True]
         class Transport:
             is_connected = True
             def open(self, callback): self.receive = callback
             def close(self): pass
-            def send_frame(self, frame): sent.append(codec.decode(frame)["name"])
+            def send_frame(self, frame):
+                sent.append(codec.decode(frame)["name"])
+                sent_event.set()
         transport = Transport()
-        def sleep(_delay): active[0] = False
+        def sleep(_delay):
+            self.assertTrue(sent_event.wait(1), "radio writer did not send queued heartbeat")
+            active[0] = False
         _run_radio_service(router, transport, lambda: not active[0], sleep=sleep)
         self.assertIn("HEARTBEAT", sent)
         self.assertFalse(any(op.address == 0x09 for op in bus.operations))
+
+    def test_blocking_modem_ack_does_not_pause_i2c_or_stop_and_close_unblocks_writer(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        router = BoatRouter(bus, cfg, clock=self.clock)
+        router._last_heartbeat = self.clock() - 1.1
+        main_thread = threading.get_ident()
+        stepped_threads = []
+        original_step = router.step
+        def tracked_step():
+            stepped_threads.append(threading.get_ident())
+            return original_step()
+        router.step = tracked_step
+
+        serial = BlockingAckSerial()
+        transport = LoRaModemTransport("fake", serial_factory=lambda *a, **kw: serial,
+                                       command_timeout_s=0.2)
+        active = [True]
+        callback_thread = []
+        injected = [False]
+
+        def sleep(_delay):
+            if not injected[0]:
+                self.assertTrue(serial.send_started.wait(1), "actual transport did not start AT+SEND")
+                callback = transport._on_frame
+                def modem_receive():
+                    callback_thread.append(threading.get_ident())
+                    callback(radio_stop(1))
+                    callback(radio_stop(2))
+                receiver = threading.Thread(target=modem_receive, name="fake-modem-reader")
+                receiver.start()
+                receiver.join(1)
+                self.assertFalse(receiver.is_alive())
+                injected[0] = True
+            self.clock.advance(0.02)
+            writes = [op for op in bus.operations if op.kind == "write" and op.address == 0x08]
+            reads = [op for op in bus.operations if op.kind == "read"]
+            if writes and reads:
+                active[0] = False
+
+        _run_radio_service(router, transport, lambda: not active[0], sleep=sleep)
+        writes = [op for op in bus.operations if op.kind == "write" and op.address == 0x08]
+        decoded = [codec.decode(router._decode_mailbox(op.data)) for op in writes]
+        self.assertEqual([item["fields"]["opcode"] for item in decoded], [3])
+        self.assertTrue(any(op.kind == "read" for op in bus.operations),
+                        "I2C polling must continue while the modem ACK is held")
+        self.assertTrue(stepped_threads)
+        self.assertEqual(set(stepped_threads), {main_thread})
+        self.assertNotEqual(callback_thread, [main_thread])
+        self.assertTrue(serial.closed, "shutdown must close serial to release the blocked ACK wait")
+        self.assertFalse(transport._sender and transport._sender.is_alive())
+        self.assertFalse(any(op.address == 0x09 for op in bus.operations))
+
+    def test_failed_writer_cancels_unsent_stop_and_does_not_replay_on_new_service(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        events = []
+        router = BoatRouter(bus, cfg, clock=self.clock, on_event=events.append)
+        router._last_heartbeat = self.clock() - 1.1
+
+        class FailingTransport:
+            is_connected = True
+            def __init__(self):
+                self.failed = threading.Event()
+                self.closed = False
+            def open(self, callback):
+                callback(radio_stop(11))
+                callback(radio_stop(12))
+            def send_frame(self, _frame):
+                self.failed.set()
+                raise OSError("injected uncertain modem write")
+            def close(self): self.closed = True
+
+        first = FailingTransport()
+        with redirect_stderr(io.StringIO()) as log:
+            _run_radio_service(router, first, lambda: False,
+                               sleep=lambda _delay: self.assertTrue(first.failed.wait(1)))
+        self.assertTrue(first.closed)
+        self.assertIn("outcome may be unknown", log.getvalue())
+        self.assertTrue(any(event.kind == "request_result" and "cancelled" in event.detail
+                            for event in events))
+        writes = [op for op in bus.operations if op.kind == "write" and op.address == 0x08]
+        self.assertEqual(len(writes), 1, "one STOP reached the bus; the other remained unsent")
+
+        class NextTransport:
+            is_connected = True
+            def __init__(self): self.sent = []
+            def open(self, callback): pass
+            def send_frame(self, frame): self.sent.append(bytes(frame))
+            def close(self): pass
+        second = NextTransport()
+        active = [True]
+        _run_radio_service(router, second, lambda: not active[0],
+                           sleep=lambda _delay: active.__setitem__(0, False))
+        self.assertFalse(any(codec.decode(frame)["name"] == "ACTUATOR_REQUEST"
+                             for frame in second.sent))
+        self.assertEqual(router.queued_writes, 0)
 
     def test_radio_rejects_malformed_and_wrong_source_authority(self):
         cfg = ServiceConfig(comms_enabled=False)
