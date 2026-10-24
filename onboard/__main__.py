@@ -429,7 +429,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="TOML bus and IMU register configuration")
     parser.add_argument("--simulate", action="store_true",
                         help="use injectable simulated peers and visibly labeled simulated IMU values")
-    parser.add_argument("--port", default="/dev/serial0", help="UART device for direct radio mode")
+    parser.add_argument("--port", default="/dev/ttyS0",
+                        help="modem UART device (default: /dev/ttyS0, Pi Zero UART1)")
     parser.add_argument("--baud", type=int, default=115200, help="UART baud rate for direct radio mode")
     parser.add_argument("--local-address", type=int, default=1, help="local modem address (default: 1)")
     parser.add_argument("--peer-address", type=int, default=2, help="ground modem address (default: 2)")

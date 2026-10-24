@@ -1,6 +1,7 @@
 """Dedicated Raspberry Pi direct-radio boat brain entry point.
 
-This is a named launcher for the production onboard router. The router owns
+This is a named launcher for the production onboard router, using Pi Zero
+UART1 (/dev/ttyS0) by default. The router owns
 the shared I2C bus, validates incoming MAVLink, routes commands to configured
 peers, gathers node/IMU telemetry, and returns those frames through the radio.
 """
