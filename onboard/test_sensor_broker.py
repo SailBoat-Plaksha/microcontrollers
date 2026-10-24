@@ -24,7 +24,7 @@ class Clock:
         self.now += ms / 1000
 
 
-def lsm_map(*, ag_status=9, mag_status=8):
+def lsm_map(*, ag_status=3, mag_status=8):
     return {
         0x6B: {0x0F: 0x68, 0x17: ag_status,
                0x28: struct.pack("<3h", -1000, 500, 2000),
@@ -42,9 +42,9 @@ def request(request_id=1, *, session=55, path=0, timeout=1000, max_age=0):
     }, system=SYSTEM_GROUND, component=COMPONENT_GROUND, sequence=request_id & 0xff)
 
 
-def dependency(request_id=1):
+def dependency(request_id=1, *, session=55):
     return codec.encode("IMU_REQUEST", {
-        "ground_session": 0, "request_id": request_id,
+        "ground_session": session, "request_id": request_id,
         "timeout_ms": 1000, "max_age_ms": 0, "path": 0,
         "target_system": 1, "target_component": 1,
     }, system=1, component=COMPONENT_SENSOR)
@@ -56,7 +56,7 @@ class SensorBrokerTests(unittest.TestCase):
         self.output = []
         self.events = []
 
-    def direct_router(self, *, ag_status=9, mag_status=8):
+    def direct_router(self, *, ag_status=3, mag_status=8):
         cfg = ServiceConfig(comms_enabled=False, lsm9ds1_enabled=True)
         bus = SimulatedBus(present=(0x08,), register_map=lsm_map(ag_status=ag_status, mag_status=mag_status))
         router = BoatRouter(bus, cfg, clock=self.clock, on_frame=self.output.append,
@@ -176,11 +176,11 @@ class SensorBrokerTests(unittest.TestCase):
                         if op.kind == "write" and op.address == 0x0A)
         self.assertEqual((outbound["name"], outbound["system"], outbound["component"],
                           outbound["fields"]["target_component"]), ("IMU_REQUEST", 1, 1, 159))
-        bus.inject_frame(0x0A, dependency(900))
+        bus.inject_frame(0x0A, dependency(1))
         router._poll_index = router._poll_addresses.index(0x0A)
         router.step()  # poll Pico dependency
         parent = router._imu_pending[(255, 190, 55, 1)]
-        self.assertEqual((parent.dependency_fields["ground_session"], parent.dependency_request_id), (0, 900))
+        self.assertEqual((parent.dependency_fields["ground_session"], parent.dependency_request_id), (55, 1))
         router._poll_index = router._poll_addresses.index(-1)
         router.step()  # Pi reads LSM and queues dependency IMU_SAMPLE to Pico
         router.step()  # write dependency result to Pico
@@ -188,8 +188,8 @@ class SensorBrokerTests(unittest.TestCase):
                             if op.kind == "write" and op.address == 0x0A and
                             codec.decode(router._decode_mailbox(op.data))["name"] == "IMU_SAMPLE")
         self.assertEqual((dep_response["fields"]["ground_session"], dep_response["fields"]["request_id"],
-                          dep_response["fields"]["target_component"], dep_response["fields"]["acquisition_component"]),
-                         (0, 900, 159, 1))
+                          dep_response["fields"]["target_component"], dep_response["fields"]["path"],
+                          dep_response["fields"]["acquisition_component"]), (55, 1, 159, 0, 1))
         returned = codec.encode("IMU_SAMPLE", {
             "ground_session": 55, "request_id": 1, "time_boot_ms": 12, "sample_seq": 1,
             "acquisition_boot_id": router.boot_id, "source_boot_id": 1234, "sample_age_ms": 3,
@@ -227,6 +227,66 @@ class SensorBrokerTests(unittest.TestCase):
         router.step()
         self.assertEqual(self.samples()[-1]["fields"]["status"], 4)
         self.assertEqual(self.samples()[-1]["fields"]["valid_fields"], 0)
+        self.assertEqual((self.samples()[-1]["system"], self.samples()[-1]["component"]), (1, 1))
+
+    def test_board_dependency_requires_exact_correlation_without_single_candidate_guess(self):
+        cfg = ServiceConfig(comms_enabled=False, sensor_enabled=True, lsm9ds1_enabled=True)
+        bus = SimulatedBus(present=(0x08, 0x0A), register_map=lsm_map())
+        router = BoatRouter(bus, cfg, clock=self.clock, on_frame=self.output.append,
+                            on_event=self.events.append)
+        self.assertTrue(router.submit_frame(request(1, session=55, path=1), ingress="radio"))
+        self.assertTrue(router.submit_frame(request(2, session=55, path=1), ingress="radio"))
+        bad = dependency(2, session=99)
+        self.assertFalse(router._accept_imu_request(bad, codec.decode(bad)["fields"], "sensor"))
+        self.assertIsNone(router._imu_pending[(255, 190, 55, 1)].dependency_fields)
+        self.assertIsNone(router._imu_pending[(255, 190, 55, 2)].dependency_fields)
+
+        for request_id in (2, 1):
+            frame = dependency(request_id)
+            self.assertTrue(router._accept_imu_request(frame, codec.decode(frame)["fields"], "sensor"))
+        self.assertEqual(router._imu_pending[(255, 190, 55, 1)].dependency_request_id, 1)
+        self.assertEqual(router._imu_pending[(255, 190, 55, 2)].dependency_request_id, 2)
+        altered = dependency(1)
+        altered_fields = dict(codec.decode(altered)["fields"])
+        altered_fields["timeout_ms"] = 900
+        altered = codec.encode("IMU_REQUEST", altered_fields, system=1, component=159)
+        self.assertFalse(router._accept_imu_request(altered, codec.decode(altered)["fields"], "sensor"))
+
+    def test_session_zero_local_request_works_without_ground_parent_and_stays_sensor_only(self):
+        cfg = ServiceConfig(comms_enabled=False, sensor_enabled=True, lsm9ds1_enabled=True)
+        bus = SimulatedBus(present=(0x08, 0x0A), register_map=lsm_map())
+        router = BoatRouter(bus, cfg, clock=self.clock, on_frame=self.output.append,
+                            on_event=self.events.append)
+        frame = dependency(1, session=0)
+        self.assertTrue(router._accept_imu_request(frame, codec.decode(frame)["fields"], "sensor"))
+        router._poll_index = router._poll_addresses.index(-1)
+        router.step()
+        router.step()
+        response = next(codec.decode(router._decode_mailbox(op.data)) for op in reversed(bus.operations)
+                        if op.kind == "write" and op.address == 0x0A and
+                        codec.decode(router._decode_mailbox(op.data))["name"] == "IMU_SAMPLE")
+        self.assertEqual((response["system"], response["component"]), (1, 1))
+        self.assertEqual((response["fields"]["ground_session"], response["fields"]["request_id"],
+                          response["fields"]["path"], response["fields"]["target_component"],
+                          response["fields"]["status"]), (0, 1, 0, 159, 1))
+        self.assertEqual(self.samples(), [])
+        self.assertFalse(router._imu_pending)
+
+    def test_session_zero_local_request_rejects_reorder_and_altered_duplicate(self):
+        cfg = ServiceConfig(comms_enabled=False, sensor_enabled=True, lsm9ds1_enabled=True)
+        bus = SimulatedBus(present=(0x08, 0x0A), register_map=lsm_map(ag_status=0, mag_status=0))
+        router = BoatRouter(bus, cfg, clock=self.clock, on_frame=self.output.append,
+                            on_event=self.events.append)
+        first = dependency(2, session=0)
+        self.assertTrue(router._accept_imu_request(first, codec.decode(first)["fields"], "sensor"))
+        self.assertTrue(router._accept_imu_request(first, codec.decode(first)["fields"], "sensor"))
+        changed = dict(codec.decode(first)["fields"])
+        changed["timeout_ms"] = 900
+        changed_frame = codec.encode("IMU_REQUEST", changed, system=1, component=159)
+        self.assertTrue(router._accept_imu_request(changed_frame, changed, "sensor"))
+        self.assertEqual(len(router._sensor_local_pending), 1)
+        old = dependency(1, session=0)
+        self.assertFalse(router._accept_imu_request(old, codec.decode(old)["fields"], "sensor"))
 
     def test_missing_sensor_mailbox_does_not_block_motor_poll(self):
         cfg = ServiceConfig(comms_enabled=False, sensor_enabled=True, lsm9ds1_enabled=True)

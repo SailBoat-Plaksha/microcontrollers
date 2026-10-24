@@ -122,8 +122,12 @@ class SimulatedBus:
         self._fault("imu", address)
         registers = self.register_map.get(address)
         if registers is not None:
+            # The magnetometer uses SUB[7] as its multi-byte auto-increment
+            # bit. Keep the original command in the trace but read from the
+            # actual register bank starting at SUB[6:0].
+            first_register = register & 0x7F
             self.operations[-1] = BusOperation("imu_read", address, bytes((register, length)))
-            return bytes(registers.get(register + offset, 0) for offset in range(length))
+            return bytes(registers.get(first_register + offset, 0) for offset in range(length))
         sample = self.imu_samples.get(address)
         if sample is None or len(sample) < length:
             raise OSError(f"no configured simulated IMU sample at 0x{address:02x}")

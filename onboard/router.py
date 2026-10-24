@@ -64,6 +64,7 @@ class _IMUPending:
     dependency_completed_at: float = 0.0
     dependency_request_id: int | None = None
     last_error: bool = False
+    sensor_local: bool = False
 
 
 class BoatRouter:
@@ -124,6 +125,8 @@ class BoatRouter:
         self._imu_highest: dict[tuple[int, int, int], int] = {}
         self._imu_sessions: dict[tuple[int, int], int] = {}
         self._sensor_dependency_highest = 0
+        self._sensor_local_pending: dict[int, _IMUPending] = {}
+        self._sensor_local_outcomes: dict[int, tuple[tuple[int, ...], bytes, float]] = {}
         self._imu_retired: deque[tuple[int, int, int]] = deque(maxlen=64)
         self._imu_samples = 0
         self._imu_job_cursor = 0
@@ -258,30 +261,21 @@ class BoatRouter:
         board_local = source == (ids.SYSTEM_BOAT, self.config.sensor_component)
         target = (fields["target_system"], fields["target_component"])
         if board_local:
-            if (not self.config.sensor_enabled or fields["ground_session"] != 0 or
-                    fields["request_id"] == 0 or target != (1, 1) or fields["path"] != 0):
+            if (not self.config.sensor_enabled or fields["request_id"] == 0 or
+                    target != (1, 1) or fields["path"] != 0 or
+                    not 1 <= fields["timeout_ms"] <= 5000):
                 self._event("rejected", "invalid sensor Pico dependency request", original, source)
                 return False
-            parent = next((p for p in self._imu_pending.values()
-                           if p.board_dependency and p.dependency_request_id == fields["request_id"]), None)
-            is_new_dependency = parent is None
-            if is_new_dependency:
-                candidates = [p for p in self._imu_pending.values()
-                              if p.board_dependency and p.dependency_request_id is None and
-                              p.dependency_fields is None and p.deadline > self.clock()]
-                if len(candidates) == 1:
-                    parent = candidates[0]
-            if parent is None or parent.deadline <= self.clock():
-                self._event("rejected", "sensor dependency has no live board request", original, source)
+            if fields["ground_session"] == 0:
+                return self._accept_sensor_local_request(fields, original)
+            key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND,
+                   fields["ground_session"], fields["request_id"])
+            parent = self._imu_pending.get(key)
+            if (parent is None or not parent.board_dependency or
+                    parent.deadline <= self.clock() or fields["request_id"] == 0):
+                self._event("rejected", "sensor dependency has no exact live board request", original, source)
                 return False
-            if fields["timeout_ms"] < 1 or fields["timeout_ms"] > 5000:
-                return False
-            if is_new_dependency and fields["request_id"] <= self._sensor_dependency_highest:
-                self._event("rejected", "reordered sensor-local dependency request", original, source)
-                return False
-            if is_new_dependency:
-                self._sensor_dependency_highest = fields["request_id"]
-                parent.dependency_request_id = fields["request_id"]
+            parent.dependency_request_id = fields["request_id"]
             return self._service_sensor_dependency(fields, parent)
         if source != (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND):
             self._event("rejected", "IMU request source is invalid", original, source)
@@ -367,10 +361,18 @@ class BoatRouter:
         while len(self._imu_outcomes) >= limit:
             key = min(self._imu_outcomes, key=lambda item: self._imu_outcomes[item][2])
             self._imu_outcomes.pop(key, None)
+        while len(self._sensor_local_outcomes) >= limit:
+            request_id = min(self._sensor_local_outcomes,
+                             key=lambda item: self._sensor_local_outcomes[item][2])
+            self._sensor_local_outcomes.pop(request_id, None)
+        for request_id, (_, _, expiry) in list(self._sensor_local_outcomes.items()):
+            if expiry <= now:
+                self._sensor_local_outcomes.pop(request_id, None)
 
     def _service_imu_job(self) -> bool:
         eligible = [pending for pending in self._imu_pending.values()
                     if not pending.board_dependency or pending.dependency_fields is not None]
+        eligible.extend(self._sensor_local_pending.values())
         if eligible:
             pending = eligible[self._imu_job_cursor % len(eligible)]
             self._imu_job_cursor = (self._imu_job_cursor + 1) % max(1, len(eligible))
@@ -385,9 +387,67 @@ class BoatRouter:
                 status = 3 if pending.last_error else 4
                 frame = self._imu_frame(pending.fields, status, 0, (0,) * 9, 0, pending.route)
                 self._finish_imu(pending, frame, pending.route)
+        for pending in list(self._sensor_local_pending.values()):
+            if pending.deadline <= now:
+                status = 3 if pending.last_error else 4
+                self._finish_sensor_local(
+                    pending, self._imu_frame(pending.fields, status, 0, (0,) * 9, 0, "sensor_local"))
+
+    def _accept_sensor_local_request(self, fields: dict[str, int], original: bytes) -> bool:
+        request_id = fields["request_id"]
+        fingerprint = tuple(fields[k] for k in ("ground_session", "request_id", "timeout_ms",
+                         "max_age_ms", "path", "target_system", "target_component"))
+        saved = self._sensor_local_outcomes.get(request_id)
+        if saved and saved[2] > self.clock():
+            if saved[0] == fingerprint:
+                self._queue(self._refresh_cached_imu(saved[1], saved[2] - 30.0),
+                            self.config.sensor_address, 2)
+            else:
+                self._event("rejected", "altered duplicate sensor-local request rejected", original,
+                            (ids.SYSTEM_BOAT, self.config.sensor_component))
+            return True
+        pending = self._sensor_local_pending.get(request_id)
+        if pending:
+            if pending.fingerprint != fingerprint:
+                self._event("rejected", "altered duplicate sensor-local request rejected", original,
+                            (ids.SYSTEM_BOAT, self.config.sensor_component))
+            return True
+        if request_id <= self._sensor_dependency_highest:
+            self._event("rejected", "reordered sensor-local request rejected", original,
+                        (ids.SYSTEM_BOAT, self.config.sensor_component))
+            return False
+        limit = min(32, max(4, self.config.queue_limit // 2))
+        if len(self._sensor_local_pending) >= limit:
+            self._event("rejected", "sensor-local IMU queue is full", original,
+                        (ids.SYSTEM_BOAT, self.config.sensor_component))
+            return False
+        if self._lsm is None:
+            self._event("rejected", "sensor-local IMU request has no configured Pi sensor", original,
+                        (ids.SYSTEM_BOAT, self.config.sensor_component))
+            return False
+        self._sensor_dependency_highest = request_id
+        fields = dict(fields)
+        fields["target_system"], fields["target_component"] = ids.SYSTEM_BOAT, self.config.sensor_component
+        key = (ids.SYSTEM_BOAT, self.config.sensor_component, 0, request_id)
+        self._sensor_local_pending[request_id] = _IMUPending(
+            key, fields, "sensor_local", self.clock(),
+            self.clock() + fields["timeout_ms"] / 1000.0, fingerprint, sensor_local=True)
+        self._event("imu_request", "accepted sensor-local IMU request", original,
+                    (ids.SYSTEM_BOAT, self.config.sensor_component))
+        return True
+
+    def _finish_sensor_local(self, pending: _IMUPending, frame: bytes) -> None:
+        self._sensor_local_pending.pop(pending.fields["request_id"], None)
+        self._sensor_local_outcomes[pending.fields["request_id"]] = (
+            pending.fingerprint, frame, self.clock() + 30.0)
+        self._queue(frame, self.config.sensor_address, 2, pending.key)
 
     def _read_lsm(self, pending: _IMUPending) -> bool:
         if self._lsm is None:
+            if pending.sensor_local:
+                frame = self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, "sensor_local")
+                self._finish_sensor_local(pending, frame)
+                return False
             self._emit_imu_error(pending.fields, pending.route, 3, "configured direct sensor unavailable")
             self._imu_pending.pop(pending.key, None)
             return False
@@ -402,7 +462,10 @@ class BoatRouter:
                 raise ValueError("scaled IMU axis exceeds int16 range")
             self._imu_samples = (self._imu_samples + 1) & 0xFFFFFFFF
             response = self._imu_frame(pending.fields, 1, fields, axes, sample.acquired_at, pending.route)
-            self._finish_imu(pending, response, pending.route)
+            if pending.sensor_local:
+                self._finish_sensor_local(pending, response)
+            else:
+                self._finish_imu(pending, response, pending.route)
             self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False)
                         else "LSM9DS1 register sample", response, (1, 1))
             return True
@@ -413,7 +476,11 @@ class BoatRouter:
             pending.last_error = True
             self._event("imu_error", f"LSM9DS1 unavailable: {exc}")
             if self.clock() >= pending.deadline:
-                self._finish_imu(pending, self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, pending.route), pending.route)
+                frame = self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, pending.route)
+                if pending.sensor_local:
+                    self._finish_sensor_local(pending, frame)
+                else:
+                    self._finish_imu(pending, frame, pending.route)
             return False
 
     def _service_sensor_dependency(self, fields: dict[str, int], parent: _IMUPending) -> bool:
@@ -437,7 +504,6 @@ class BoatRouter:
     def _read_sensor_dependency(self, parent: _IMUPending) -> bool:
         assert parent.dependency_fields is not None
         fields = dict(parent.dependency_fields)
-        fields["ground_session"] = 0
         fields["target_system"], fields["target_component"] = 1, self.config.sensor_component
         try:
             if self._lsm is None:
@@ -509,6 +575,8 @@ class BoatRouter:
     def _route_imu(self, frame: bytes, route: str) -> None:
         if route == "comms" and self.config.comms_enabled:
             self._queue(frame, self.config.comms_address, 1)
+        elif route == "sensor_local":
+            self._queue(frame, self.config.sensor_address, 2)
         else:
             self.on_frame(frame)
 
@@ -970,6 +1038,8 @@ class BoatRouter:
                     self._event("session", "motor boot changed; ground session retired and must reconnect")
             elif prior is not None and prior != boot and source[1] == self.config.sensor_component:
                 self._sensor_dependency_highest = 0
+                self._sensor_local_pending.clear()
+                self._sensor_local_outcomes.clear()
                 for pending in list(self._imu_pending.values()):
                     if pending.board_dependency:
                         frame = self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, pending.route)
