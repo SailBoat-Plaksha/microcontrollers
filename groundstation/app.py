@@ -238,6 +238,7 @@ def build_ui(ui):
                 with ui.row().classes("w-full flex-wrap items-stretch"):
                     for key, title in (((1, 1), "Pi · router / IMU"),
                                        ((1, 154), "Motor Pico"),
+                                       ((1, 159), "Sensor Pico"),
                                        ((1, 158), "Comms Pico (optional)")):
                         with ui.card().classes("grow basis-52 min-w-0"):
                             ui.label(title).classes("font-medium")

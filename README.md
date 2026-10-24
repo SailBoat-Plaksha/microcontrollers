@@ -32,6 +32,10 @@ The Pi and motor Pico exchange raw MAVLink in 64-byte I2C mailboxes.
 for Pi UART1 setup and wiring, and [software changes](docs/software-changes.md)
 for the full change walkthrough and existing motor-code integration.
 
+For the LSM9DS1 sensor board and on-demand IMU readings, see
+[sensor board setup](docs/sensor-board.md). The Pi remains the only I2C
+controller and can pass requested data between peripheral mailboxes.
+
 Older LoRa gateway variants remain available: `Remote-Station-LoRA/main.c` for a Pico,
 and `Remote-Station-LoRA/LoRA-transmit-receive.py` for a Pi connected directly
 to the modem. `Base-Station-LoRA/main.py` is a MicroPython gateway with raw
