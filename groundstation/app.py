@@ -13,9 +13,19 @@ from .transports import SerialTransport, SimulationTransport, SSHTransport
 
 _WORKERS = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="boat-io")
 _ACTION_LOCK = __import__("threading").Lock()
+
+
+def _make_pico_at_transport(port, baud, **settings):
+    transport = LoRaModemTransport(port, int(baud), **settings)
+    transport.name = "LoRa · Pico USB UART0 (AT bridge)"
+    return transport
+
+
 TRANSPORT_FACTORIES = {
     "serial": lambda port, baud: SerialTransport(port, int(baud)),
     "direct_radio": lambda port, baud, **settings: LoRaModemTransport(
+        port, int(baud), **settings),
+    "pico_at": lambda port, baud, **settings: _make_pico_at_transport(
         port, int(baud), **settings),
     "ssh": lambda alias, _baud: SSHTransport(alias),
     "simulation": lambda _port, _baud: SimulationTransport(),
@@ -29,7 +39,7 @@ def set_transport_factory(kind, factory):
     simulator; replacement objects still carry raw frames through BoatClient.
     """
     if kind not in TRANSPORT_FACTORIES:
-        raise ValueError("transport kind must be serial, direct_radio, ssh, or simulation")
+        raise ValueError("transport kind must be serial, direct_radio, pico_at, ssh, or simulation")
     if not callable(factory):
         raise TypeError("factory must be callable")
     TRANSPORT_FACTORIES[kind] = factory
@@ -77,11 +87,12 @@ def _connect(mode, port, baud, ssh_host, radio_settings=None):
             with STATE.lock:
                 STATE.connected = False
                 STATE.client = None
-        key, first = (("direct_radio", port) if mode.startswith("LoRa · direct USB UART") else
+        key, first = (("pico_at", port) if mode.startswith("LoRa · Pico USB UART0") else
+                      ("direct_radio", port) if mode.startswith("LoRa · direct USB UART") else
                       ("serial", port) if mode.startswith("LoRa") else
                       ("ssh", ssh_host) if mode.startswith("SSH") else
                       ("simulation", port))
-        if key == "direct_radio":
+        if key in ("direct_radio", "pico_at"):
             transport = TRANSPORT_FACTORIES[key](first, baud, **(radio_settings or {}))
         else:
             transport = TRANSPORT_FACTORIES[key](first, baud)
@@ -190,11 +201,14 @@ def build_ui(ui):
         with ui.card().classes("w-full"):
             ui.label("Connection").classes("text-lg font-medium")
             with ui.row().classes("w-full flex-wrap items-end gap-3"):
-                mode = ui.select(["LoRa · direct USB UART", "LoRa · ground Pico USB (raw MAVLink)",
+                mode = ui.select(["LoRa · Pico USB UART0 (AT bridge)",
+                                  "LoRa · direct USB UART",
+                                  "LoRa · ground Pico USB (raw MAVLink)",
                                   "SSH · Pi bridge",
-                                  "SIMULATION · generated values"], value="LoRa · direct USB UART",
+                                  "SIMULATION · generated values"],
+                                 value="LoRa · Pico USB UART0 (AT bridge)",
                                  label="Transport").classes("w-64")
-                port = ui.input("USB serial port", value="/dev/ttyUSB0").classes("w-56")
+                port = ui.input("USB serial port", value="/dev/ttyACM0").classes("w-56")
                 baud = ui.number("Baud", value=115200, min=1200, max=3000000, precision=0).classes("w-36")
                 host = ui.input("SSH config host alias", value="boat-pi").classes("w-56")
                 connect_btn = ui.button("Connect", color="primary")
@@ -335,8 +349,9 @@ def build_ui(ui):
                     motor_text.set_text(f"{('Sail' if selected_actuator == 1 else 'Rudder')}: no measured status; movement disabled." +
                                         ("\nSIMULATION MODE" if simulation else ""))
                 for source, label in node_labels.items():
-                    if source == (1, 158) and STATE.mode.startswith("LoRa · direct USB UART"):
-                        label.set_text("Not used in direct USB-UART mode")
+                    if source == (1, 158) and (STATE.mode.startswith("LoRa · direct USB UART") or
+                                               STATE.mode.startswith("LoRa · Pico USB UART0")):
+                        label.set_text("Not used in direct host AT mode")
                         continue
                     node = STATE.nodes.get(source, {})
                     age = max(0.0, now - node.get("seen", now))
@@ -405,7 +420,7 @@ def build_ui(ui):
 
         def connect_selected():
             settings = None
-            if mode.value == "LoRa · direct USB UART":
+            if mode.value.startswith("LoRa · Pico USB UART0") or mode.value.startswith("LoRa · direct USB UART"):
                 try:
                     settings = {"local_address": int(local_address.value),
                                 "peer_address": int(peer_address.value),

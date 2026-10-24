@@ -34,6 +34,14 @@ class CliTests(unittest.TestCase):
         constructor.assert_called_once_with("/dev/ttyUSB0", 57600, local_address=7,
             peer_address=9, network_id=18, band_hz=915000000, parameter="9,7,1,12")
 
+    def test_lora_cli_accepts_pico_acm0_port(self):
+        args = cli.build_parser().parse_args(["--lora", "/dev/ttyACM0", "--baud", "115200"])
+        sentinel = object()
+        with patch.object(cli, "LoRaModemTransport", return_value=sentinel) as constructor:
+            self.assertIs(cli.make_transport(args), sentinel)
+        constructor.assert_called_once_with("/dev/ttyACM0", 115200, local_address=2,
+            peer_address=1, network_id=18, band_hz=None, parameter="10,7,1,12")
+
 
 if __name__ == "__main__":
     unittest.main()

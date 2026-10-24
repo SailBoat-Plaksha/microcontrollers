@@ -17,16 +17,17 @@ Open `http://127.0.0.1:8080`. To choose another local port use `--port 8081`. Bi
 
 The app's connection choices are:
 
-- **LoRa · direct USB UART**: primary direct-radio path. The laptop opens the RYLR998 modem on USB-UART, configures its local address, network ID and modulation parameters, then sends codec-validated MAVLink frames as Base64 modem payloads. Local address `2`, expected boat peer `1`, and network ID `18` are the defaults. Both radios must use matching network, frequency and RF parameters. Optional band frequency is sent only when entered; an empty field leaves the modem's stored band unchanged. The Pi is the boat-side modem host and remains the only I2C controller. Modem `+OK` means local acceptance; motor status/outcome is separate Pi/MAVLink feedback.
-
-Direct-radio `send_frame` waits synchronously for the modem ACK and can block up to the configured command timeout. Call it from a worker outside GUI event loops and outside the Pi's sole I2C thread. The groundstation and Pi integration must keep this operation off their UI/I2C execution paths.
-- **LoRa · ground Pico USB (raw MAVLink)**: optional legacy mode. USB serial carries raw unsigned MAVLink to a ground Pico gateway, which handles the modem envelope.
+- **LoRa · Pico USB UART0 (AT bridge)**: default primary ground connection. The ground hardware topology is laptop USB -> Pico native USB CDC -> UART0 GP0/1 -> RYLR998. The Pico runs a transparent AT text adapter (NOT a raw MAVLink gateway). The laptop host runs the full `LoRaModemTransport` host AT/Base64/MAVLink stack behind the Pico USB CDC port (default `/dev/ttyACM0`). The Pico transparently streams text commands and receives lines without secondary wrapping; no double Base64 encoding occurs. Local address `2`, expected boat peer `1`, network ID `18`, and parameters `10,7,1,12` are configured on open. An empty band frequency leaves the modem's stored band unchanged. The optional Comms Pico card (1, 158) is not used in this direct host AT mode.
+- **LoRa · direct USB UART**: alternative direct-radio path for a direct USB-UART dongle (e.g. `/dev/ttyUSB0`) attached directly to the RYLR998 without the intermediate Pico adapter. Shares the identical underlying `LoRaModemTransport` driver and settings.
+- **LoRa · ground Pico USB (raw MAVLink)**: optional legacy mode. USB serial carries raw unsigned MAVLink to a ground Pico gateway running gateway firmware that handles modem framing on the Pico.
 - **SSH · Pi bridge**: persistent SSH through a host alias in `~/.ssh/config`; SSH must already trust the host key. The fixed remote command is `python3 -m onboard bridge --config /etc/arsem/onboard.toml`; stdout is raw MAVLink and stderr is bridge logging.
 - **SIMULATION · generated values**: local peers encoded through `protocol.codec`; each connection gets a random simulated boot identity, and periodic motor, health, and IMU values remain labeled in the interface.
 
+Direct-radio and Pico AT bridge `send_frame` waits synchronously for the modem ACK and can block up to the configured command timeout. Call it from a worker outside GUI event loops and outside the Pi's sole I2C thread. The groundstation and Pi integration keep this operation off their UI/I2C execution paths.
+
 The SSH host field accepts an SSH config alias, not a shell command. The application invokes `ssh -T` with `BatchMode=yes`, `StrictHostKeyChecking=yes`, and `ClearAllForwardings=yes`. It does not disable host checks or prompt for a password. The Pi installation must expose the `onboard` package to `python3` from its configured environment and support the documented `onboard bridge --config` command.
 
-`groundstation.app.set_transport_factory(kind, factory)` replaces the `serial`, `direct_radio`, `ssh`, or `simulation` constructor before `build_ui` / `ui.run`. The existing `serial`, `ssh`, and `simulation` factories receive `(port_or_alias, baud)`; `direct_radio` also accepts the modem settings as keyword arguments. Each returns a `boat.client.Transport`. This is the seam for injecting a radio serial fake or onboard-router simulator while keeping traffic on the same `BoatClient` and `protocol.codec` path.
+`groundstation.app.set_transport_factory(kind, factory)` replaces the `pico_at`, `direct_radio`, `serial`, `ssh`, or `simulation` constructor before `build_ui` / `ui.run`. The `serial`, `ssh`, and `simulation` factories receive `(port_or_alias, baud)`; `pico_at` and `direct_radio` also accept modem settings as keyword arguments. Each returns a `boat.client.Transport`. This is the seam for injecting a radio serial fake or onboard-router simulator while keeping traffic on the same `BoatClient` and `protocol.codec` path.
 
 On-demand IMU reads are independent of motor readiness. **Read IMU** sends a direct Pi sensor request; **Read via Sensor Pico** uses the Pi-polled 0x0A sensor board route. The Pi remains the only I2C controller. Each correlated reply shows request ID, status, reporting source, Pi acquisition owner, sample age, validity mask, and all nine axes in mg, mrad/s, and mgauss. Errors and timeouts clear the displayed validity mask. Simulation generates and labels replies for both paths.
 
@@ -38,13 +39,32 @@ From the repository root:
 
 ```sh
 python3 -m groundstation.cli --simulate
-python3 -m groundstation.cli --lora /dev/ttyUSB0 --baud 115200 --local-address 2 --peer-address 1 --network-id 18 --parameter 10,7,1,12
-python3 -m groundstation.cli --lora /dev/ttyUSB0 --band-hz 915000000
-python3 -m groundstation.cli --serial /dev/ttyACM0 --baud 115200  # optional raw gateway Pico
+python3 -m groundstation.cli --lora /dev/ttyACM0 --baud 115200   # Pico USB UART0 AT bridge
+python3 -m groundstation.cli --lora /dev/ttyUSB0 --baud 115200   # direct USB-UART adapter
+python3 -m groundstation.cli --lora /dev/ttyACM0 --band-hz 915000000
+python3 -m groundstation.cli --serial /dev/ttyACM0 --baud 115200  # legacy raw gateway Pico
 python3 -m groundstation.cli --ssh boat-pi
 ```
 
+The existing `--lora` argument accepts `/dev/ttyACM0` directly when using the Pico USB UART0 transparent AT bridge.
+
 Commands are `absolute <degrees> [actuator 1|2]`, `step [degrees [actuator 1|2]]`, `stop [actuator 1|2]`, `imu [direct|board]`, `ping`, `status`, and `quit`. `imu` defaults to the direct Pi route; `imu board` routes through the sensor Pico. The CLI reports each result, including explicit errors and timeouts. A bare `step` uses `--step-deg` (default 5); `step -5` sends a negative five degree step. The CLI exposes the same `BoatClient` methods as the GUI. It records events and reports command ticket IDs; transport reality and feedback validity remain protocol observations.
+
+## Fast Standalone Modem Check CLI
+
+To verify local ground modem reachability and query its AT identity/settings quickly without connecting `BoatClient` or generating any MAVLink motor traffic, use the standalone `groundstation.modem_check` module:
+
+```sh
+python3 -m groundstation.modem_check --port /dev/ttyACM0 --baud 115200
+python3 -m groundstation.modem_check --port /dev/ttyACM0 --timeout 1.0 --json
+```
+
+- **Safety & Scope**: Uses `LoRaModemTransport.open()` and `check_health()` directly WITHOUT initializing `BoatClient`, WITHOUT transmitting any `AT+SEND` commands, and WITHOUT generating any MAVLink motor or telemetry packets.
+- **Diagnostics**: Queries and displays the modem's actual reported AT parameters (`AT`, `AT+ADDRESS?`, `AT+NETWORKID?`, `AT+BAND?`, `AT+PARAMETER?`, `AT+VER?`, `AT+UID?`).
+- **Band Disclosure**: Open configuration sets local address 2, network ID 18, and parameters `10,7,1,12`. Leaving `--band-hz` blank (default) leaves the modem's existing stored frequency unchanged.
+- **Timeout**: Accepts `--timeout` (default 1.0 second), configuring the driver constructor `command_timeout_s`.
+- **Exit Code**: Returns `0` on successful verification with all checks passing; returns non-zero (`1`) if the modem is missing, invalid, times out, or reports mismatched parameters. All serial resources and background threads are cleanly closed upon exit.
+- **RF Boundary**: Checking the local ground modem proves local USB-UART AT communication and configuration only; it does **NOT** prove boat RF reachability, remote modem connectivity, or over-the-air link quality.
 
 ## Headless checks
 
