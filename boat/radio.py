@@ -82,7 +82,8 @@ class LoRaModemTransport:
         self.stderr_lines: queue.Queue[str] = queue.Queue(maxsize=100)
         self.stats = {"rx_lines": 0, "rx_frames": 0, "rx_rejected": 0,
                       "tx_frames": 0, "tx_accepted": 0, "tx_errors": 0,
-                      "queue_drops": 0, "config_commands": 0}
+                      "queue_drops": 0, "config_commands": 0,
+                      "health_checks": 0, "health_failures": 0}
 
     @property
     def is_connected(self):
@@ -164,12 +165,13 @@ class LoRaModemTransport:
             offset += written
         self._serial.flush()
 
-    def _run_command(self, command, timeout, *, config=False):
+    def _run_command(self, command, timeout, *, config=False, response_prefix=None):
         with self._command_lock:
             if self._serial is None or self._stop.is_set():
                 raise ConnectionError("LoRa modem is disconnected")
             done = threading.Event()
-            pending = {"event": done, "result": None, "command": command}
+            pending = {"event": done, "result": None, "command": command,
+                       "response_prefix": response_prefix}
             with self._pending_lock:
                 self._pending = pending
             try:
@@ -187,13 +189,16 @@ class LoRaModemTransport:
                 self.stats["tx_errors"] += 1
                 raise TimeoutError(f"RYLR998 command timed out; outcome uncertain: {command[:32]!r}")
             result = pending["result"]
-            if result != "ok":
+            if result != "ok" and not (response_prefix is not None and
+                                         isinstance(result, str) and
+                                         result.startswith(response_prefix.decode("ascii"))):
                 self.stats["tx_errors"] += 1
                 raise OSError(f"RYLR998 rejected command: {result}")
             if config:
                 self.stats["config_commands"] += 1
-            else:
+            elif response_prefix is None:
                 self.stats["tx_accepted"] += 1
+            return result
 
     def _read_loop(self, generation):
         line = bytearray()
@@ -230,11 +235,22 @@ class LoRaModemTransport:
             with self._pending_lock:
                 pending = self._pending
                 if pending is not None:
-                    pending["result"] = "ok" if line == b"+OK" else line.decode("ascii", "replace")
+                    pending["result"] = ("ok" if line == b"+OK" else
+                                          line.decode("ascii", "replace"))
                     self._pending = None
                     pending["event"].set()
             if line.startswith(b"+ERR="):
                 self._status("modem " + line.decode("ascii", "replace"))
+            return
+        if line.startswith((b"+ADDRESS=", b"+NETWORK=", b"+BAND=", b"+PARAMETER=",
+                            b"+VER=", b"+UID=")):
+            with self._pending_lock:
+                pending = self._pending
+                prefix = None if pending is None else pending["response_prefix"]
+                if prefix is not None and line.startswith(prefix):
+                    pending["result"] = line.decode("ascii", "replace")
+                    self._pending = None
+                    pending["event"].set()
             return
         if not line.startswith(b"+RCV="):
             if line.startswith((b"+READY", b"+RESET")):
@@ -300,6 +316,53 @@ class LoRaModemTransport:
             raise TimeoutError("radio send acknowledgement timed out; outcome uncertain")
         if item.error:
             raise item.error
+
+    def check_health(self):
+        """Probe the modem and read back its identity and radio configuration.
+
+        Commands and response prefixes follow the REYAX RYLR998 AT guide.
+        This checks the attached modem's UART command path and local settings;
+        it does not claim that a remote radio or motor is reachable.
+        """
+        if not self.is_connected:
+            raise ConnectionError("LoRa modem transport is disconnected")
+        queries = (("probe", b"AT\r\n", None),
+                   ("address", b"AT+ADDRESS?\r\n", b"+ADDRESS="),
+                   ("network_id", b"AT+NETWORKID?\r\n", b"+NETWORK="),
+                   ("band_hz", b"AT+BAND?\r\n", b"+BAND="),
+                   ("parameter", b"AT+PARAMETER?\r\n", b"+PARAMETER="),
+                   ("version", b"AT+VER?\r\n", b"+VER="),
+                   ("uid", b"AT+UID?\r\n", b"+UID="))
+        responses = {}
+        try:
+            for name, command, prefix in queries:
+                result = self._run_command(command, self.command_timeout_s,
+                                           response_prefix=prefix)
+                responses[name] = "+OK" if result == "ok" else result
+        except TimeoutError:
+            self.stats["health_failures"] += 1
+            self._fail_and_close("modem health query timed out; reconnect required")
+            raise
+        except OSError:
+            self.stats["health_failures"] += 1
+            raise
+
+        def value(name):
+            return responses.get(name, "").partition("=")[2]
+        checks = {
+            "command_probe": responses.get("probe") == "+OK",
+            "address_matches": value("address") == str(self.local_address),
+            "network_matches": value("network_id") == str(self.network_id),
+            "band_matches": self.band_hz is None or value("band_hz") == str(self.band_hz),
+            "parameters_match": value("parameter") == self.parameter,
+            "version_reported": bool(value("version")),
+            "uid_reported": bool(value("uid")),
+        }
+        healthy = all(checks.values())
+        self.stats["health_checks"] += 1
+        if not healthy:
+            self.stats["health_failures"] += 1
+        return {"healthy": healthy, "checks": checks, "responses": responses}
 
     def _send_loop(self, generation):
         while not self._stop.is_set():

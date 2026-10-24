@@ -106,7 +106,7 @@ def main():
             print("SIMULATION MODE: all sensor and motor values are generated")
         elif args.lora:
             print("Direct RYLR998 mode: +OK confirms modem acceptance; motor outcomes come from Pi/MAVLink.")
-        print("Commands: absolute <degrees> [actuator 1|2], step [degrees [actuator 1|2]], stop [actuator 1|2], ping, status, quit")
+        print("Commands: absolute <degrees> [actuator 1|2], step [degrees [actuator 1|2]], stop [actuator 1|2], ping, status, modem, quit")
         while True:
             try:
                 line = input("boat> ").strip()
@@ -121,6 +121,14 @@ def main():
             try:
                 if cmd == "ping":
                     client.ping_all()
+                elif cmd == "modem":
+                    check_health = getattr(transport, "check_health", None)
+                    if not callable(check_health):
+                        raise RuntimeError("modem AT health is available only in direct --lora mode")
+                    report = check_health()
+                    print(f"LoRa modem health: {'OK' if report['healthy'] else 'CHECK FAILED'}")
+                    for name, response in report["responses"].items():
+                        print(f"  {name}: {response}")
                 elif cmd == "absolute" and len(parts) in (2, 3):
                     deg = float(parts[1])
                     actuator = int(parts[2]) if len(parts) == 3 else 1

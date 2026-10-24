@@ -9,15 +9,19 @@ from protocol import codec
 
 class FakeSerial:
     def __init__(self, *args, ack=True, partial=0, fail_write_after=None,
-                 fail_prefix=None, **kwargs):
+                 fail_prefix=None, health_override=None, **kwargs):
         self.args, self.kwargs = args, kwargs
         self.ack, self.partial, self.fail_write_after = ack, partial, fail_write_after
         self.fail_prefix = fail_prefix
+        self.health_override = health_override or {}
         self.rx = bytearray()
         self.cv = threading.Condition()
         self.wire = bytearray()
         self.calls = []
         self.actual_writes = []
+        self.commands = []
+        self.settings = {"address": "0", "network": "18", "band": "915000000",
+                         "parameter": "10,7,1,12"}
         self.closed = False
         self.hold_acks = False
         self.pending_acks = 0
@@ -43,14 +47,36 @@ class FakeSerial:
         self.wire.extend(actual)
         if b"\n" in self.wire:
             while b"\n" in self.wire:
-                _, rest = self.wire.split(b"\n", 1)
+                command, rest = self.wire.split(b"\n", 1)
                 self.wire = bytearray(rest)
                 if self.ack:
+                    self._respond(bytes(command).rstrip(b"\r"))
                     if self.hold_acks:
                         self.pending_acks += 1
-                    else:
-                        self.inject(b"+OK\r\n")
         return count
+
+    def _respond(self, command):
+        self.commands.append(command)
+        if command.startswith(b"AT+ADDRESS="):
+            self.settings["address"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+NETWORKID="):
+            self.settings["network"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+BAND="):
+            self.settings["band"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+PARAMETER="):
+            self.settings["parameter"] = command.split(b"=", 1)[1].decode()
+        response = {
+            b"AT": b"+OK",
+            b"AT+ADDRESS?": f"+ADDRESS={self.settings['address']}".encode(),
+            b"AT+NETWORKID?": f"+NETWORK={self.settings['network']}".encode(),
+            b"AT+BAND?": f"+BAND={self.settings['band']}".encode(),
+            b"AT+PARAMETER?": f"+PARAMETER={self.settings['parameter']}".encode(),
+            b"AT+VER?": b"+VER=RYLR998_V1.0",
+            b"AT+UID?": b"+UID=0123456789AB",
+        }.get(command, b"+OK")
+        response = self.health_override.get(command, response)
+        if not self.hold_acks:
+            self.inject(response + b"\r\n")
 
     def flush(self):
         pass
@@ -119,6 +145,26 @@ class RadioTransportTests(unittest.TestCase):
         # Partial writes advance by offset; no command is restarted at byte zero.
         self.assertTrue(all(len(call) <= 7 for call in modem.actual_writes))
         transport.close()
+
+    def test_health_check_probes_at_and_reads_back_modem_identity_settings(self):
+        transport, serials = self.make()
+        transport.open(lambda _frame: None)
+        report = transport.check_health()
+        self.assertTrue(report["healthy"])
+        self.assertTrue(all(report["checks"].values()))
+        self.assertEqual(report["responses"]["probe"], "+OK")
+        expected = (b"AT", b"AT+ADDRESS?", b"AT+NETWORKID?", b"AT+BAND?",
+                    b"AT+PARAMETER?", b"AT+VER?", b"AT+UID?")
+        self.assertEqual(tuple(serials[0].commands[-len(expected):]), expected)
+        self.assertEqual(transport.stats["health_checks"], 1)
+        transport.close()
+
+        mismatch, mismatch_serials = self.make(health_override={b"AT+ADDRESS?": b"+ADDRESS=77"})
+        mismatch.open(lambda _frame: None)
+        report = mismatch.check_health()
+        self.assertFalse(report["healthy"])
+        self.assertFalse(report["checks"]["address_matches"])
+        mismatch.close()
         self.assertFalse(transport.is_connected)
 
     def test_ready_requires_each_config_ack_and_err_or_timeout_closes_cleanly(self):

@@ -67,6 +67,24 @@ class AppImportTests(unittest.TestCase):
             app.STATE.client = app.STATE.transport = app.STATE.unsubscribe = None
             app.STATE.connected = False
 
+    def test_modem_health_check_updates_ground_station_detail(self):
+        class FakeState:
+            lock = __import__("threading").RLock()
+            connected = True
+            transport = type("Transport", (), {"name": "LoRa · direct USB UART",
+                "check_health": lambda _self: {"healthy": True, "checks": {},
+                    "responses": {"address": "+ADDRESS=2", "network_id": "+NETWORK=18",
+                        "band_hz": "+BAND=915000000", "parameter": "+PARAMETER=10,7,1,12",
+                        "version": "+VER=RYLR998_V1.0", "uid": "+UID=0123456789AB"}}})()
+            detail = ""
+            def enqueue(self, event): self.event = event
+        state = FakeState()
+        with patch.object(app, "STATE", state):
+            report = app._check_modem_health()
+        self.assertTrue(report["healthy"])
+        self.assertIn("LoRa modem health OK", state.detail)
+        self.assertIn("915000000", state.detail)
+
 
 if __name__ == "__main__":
     unittest.main()
