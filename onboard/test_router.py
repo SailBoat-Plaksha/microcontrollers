@@ -14,7 +14,8 @@ from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_BOAT, SYSTEM_GROU
 from protocol import codec
 
 from onboard import BoatRouter, IMURegisterConfig, ServiceConfig, SimulatedBus
-from onboard.__main__ import _enqueue_stdout, _make_radio_transport, _run_radio_service
+from onboard.__main__ import (_enqueue_radio, _enqueue_stdout, _make_radio_transport,
+                              _run_radio_service)
 
 
 class Clock:
@@ -221,6 +222,82 @@ class RouterTests(unittest.TestCase):
         self.assertIn("cancelled", error_log.getvalue())
         self.assertTrue(any(event.kind == "request_result" and "cancelled" in event.detail
                             for event in events))
+
+    def test_radio_stop_evicts_full_regular_ingress_and_reaches_motor_bus(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        router = BoatRouter(bus, cfg, clock=self.clock)
+        router._observe_node_message(codec.decode(health()), health())
+        router._observe_node_message(codec.decode(status()), status())
+        regular = ground_request(request_id=1, opcode=1, delta=100)
+        stop = ground_request(request_id=2, opcode=3, delta=0)
+        active = [True]
+        class Transport:
+            is_connected = True
+            def open(self, callback):
+                callback(regular)
+                callback(stop)
+            def close(self): pass
+            def send_frame(self, _frame): pass
+        def sleep(_delay): active[0] = False
+        _run_radio_service(router, Transport(), lambda: not active[0],
+                           incoming_limit=1, sleep=sleep)
+        writes = [op for op in bus.operations if op.kind == "write"]
+        self.assertTrue(writes)
+        written = codec.decode(router._decode_mailbox(writes[0].data))
+        self.assertEqual((writes[0].address, written["fields"]["opcode"]), (0x08, 3))
+        self.assertFalse(any(op.address == 0x09 for op in bus.operations))
+        self.assertFalse(any(item.motion for item in (*router._normal, *router._stops)))
+
+    def test_radio_egress_coalesces_snapshots_and_preserves_correlated_results(self):
+        out = queue.Queue(maxsize=8)
+        imu = lambda tick: codec.encode("SCALED_IMU", {
+            "time_boot_ms": tick, "xacc": tick, "yacc": 0, "zacc": 0,
+            "xgyro": 0, "ygyro": 0, "zgyro": 0, "xmag": 0,
+            "ymag": 0, "zmag": 0, "temperature": 0}, system=1, component=1)
+        self.assertTrue(_enqueue_radio(out, imu(1)))
+        self.assertTrue(_enqueue_radio(out, imu(2)))
+        self.assertEqual(out.qsize(), 1)
+        self.assertEqual(codec.decode(out.queue[0])["fields"]["time_boot_ms"], 2)
+        self.assertTrue(_enqueue_radio(out, health(boot=1)))
+        self.assertTrue(_enqueue_radio(out, health(boot=2)))
+        self.assertEqual(out.qsize(), 2)
+        self.assertEqual(codec.decode(next(f for f in out.queue if codec.decode(f)["name"] == "NODE_HEALTH"))
+                         ["fields"]["boot_id"], 2)
+        self.assertTrue(_enqueue_radio(out, status(actuator=1)))
+        self.assertTrue(_enqueue_radio(out, status(actuator=2)))
+        self.assertEqual(sum(codec.decode(f)["name"] == "ACTUATOR_STATUS" for f in out.queue), 2)
+        terminal = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 42, "motor_boot_id": 55,
+            "local_command_id": 7, "result": 1, "state": 4,
+            "target_system": 255, "target_component": 190,
+        }, system=1, component=1)
+        self.assertTrue(_enqueue_radio(out, terminal))
+        self.assertTrue(_enqueue_radio(out, terminal))
+        other_terminal = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 43, "motor_boot_id": 55,
+            "local_command_id": 8, "result": 1, "state": 4,
+            "target_system": 255, "target_component": 190,
+        }, system=1, component=1)
+        self.assertTrue(_enqueue_radio(out, other_terminal))
+        results = [f for f in out.queue if codec.decode(f)["name"] == "REQUEST_RESULT"]
+        self.assertEqual({codec.decode(f)["fields"]["request_id"] for f in results}, {42, 43})
+        self.assertEqual(out.qsize(), 6)
+
+    def test_radio_egress_reports_unknown_when_distinct_terminal_cannot_be_queued(self):
+        out = queue.Queue(maxsize=1)
+        def result(request_id):
+            return codec.encode("REQUEST_RESULT", {
+                "ground_session": 123, "request_id": request_id, "motor_boot_id": 55,
+                "local_command_id": request_id, "result": 1, "state": 4,
+                "target_system": 255, "target_component": 190,
+            }, system=1, component=1)
+        self.assertTrue(_enqueue_radio(out, result(1)))
+        log = io.StringIO()
+        with redirect_stderr(log):
+            self.assertFalse(_enqueue_radio(out, result(2)))
+        self.assertIn("delivery unknown", log.getvalue())
+        self.assertIn("request_id=2", log.getvalue())
 
     def test_radio_service_routes_router_output_to_transport(self):
         cfg = ServiceConfig(comms_enabled=False)
