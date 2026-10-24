@@ -8,8 +8,38 @@ endif()
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(sensor_mcu C CXX ASM)
 set(CMAKE_C_STANDARD 11)
+set(SENSOR_I2C i2c0 CACHE STRING "Sensor Pico peripheral I2C instance")
+set_property(CACHE SENSOR_I2C PROPERTY STRINGS i2c0 i2c1)
+set(SENSOR_I2C_SDA_PIN 0 CACHE STRING "Sensor Pico SDA GPIO")
+set(SENSOR_I2C_SCL_PIN 1 CACHE STRING "Sensor Pico SCL GPIO")
+set(SENSOR_I2C_ADDRESS 0x0A CACHE STRING "Sensor Pico 7-bit address; match Pi config")
+if(NOT SENSOR_I2C MATCHES "^i2c[01]$")
+  message(FATAL_ERROR "SENSOR_I2C must be i2c0 or i2c1")
+endif()
+foreach(pin SENSOR_I2C_SDA_PIN SENSOR_I2C_SCL_PIN)
+  if(NOT "${${pin}}" MATCHES "^[0-9]+$" OR ${pin} GREATER 29)
+    message(FATAL_ERROR "${pin} must be a GPIO number from 0 to 29")
+  endif()
+endforeach()
+math(EXPR sensor_sda_function "${SENSOR_I2C_SDA_PIN} % 4")
+math(EXPR sensor_expected_scl "${SENSOR_I2C_SDA_PIN} + 1")
+math(EXPR sensor_address_number "${SENSOR_I2C_ADDRESS}")
+if(NOT SENSOR_I2C_SCL_PIN EQUAL sensor_expected_scl OR
+   (SENSOR_I2C STREQUAL "i2c0" AND NOT sensor_sda_function EQUAL 0) OR
+   (SENSOR_I2C STREQUAL "i2c1" AND NOT sensor_sda_function EQUAL 2))
+  message(FATAL_ERROR "SDA/SCL pins must form a pair for the selected I2C instance")
+endif()
+if(sensor_address_number LESS 3 OR sensor_address_number GREATER 119 OR
+   sensor_address_number EQUAL 8 OR sensor_address_number EQUAL 9 OR
+   sensor_address_number EQUAL 28 OR sensor_address_number EQUAL 30 OR
+   sensor_address_number EQUAL 106 OR sensor_address_number EQUAL 107)
+  message(FATAL_ERROR "Sensor address is reserved or conflicts with a boat device")
+endif()
 pico_sdk_init()
 add_executable(sensor_mcu main.c sensor_node.c mailbox_transport.c newlib_locks.c)
+target_compile_definitions(sensor_mcu PRIVATE SENSOR_I2C=${SENSOR_I2C}
+  SENSOR_I2C_SDA_PIN=${SENSOR_I2C_SDA_PIN} SENSOR_I2C_SCL_PIN=${SENSOR_I2C_SCL_PIN}
+  SENSOR_I2C_ADDRESS=${SENSOR_I2C_ADDRESS})
 target_include_directories(sensor_mcu PRIVATE include ../protocol ../protocol/gen/C ../protocol/gen/C/arsem_standalone)
 target_link_libraries(sensor_mcu PRIVATE pico_stdlib hardware_i2c hardware_gpio pico_i2c_slave)
 pico_enable_stdio_usb(sensor_mcu 0)
