@@ -147,5 +147,44 @@ class AppImportTests(unittest.TestCase):
                 self.assertEqual(mock_verify.call_count, 1)
 
 
+    def test_send_at_command_action_connected_and_disconnected(self):
+        # 1. Connected
+        class FakeConnectedState:
+            lock = __import__("threading").RLock()
+            connected = True
+            transport = type("Transport", (), {"name": "LoRa · Pico USB UART0 (AT bridge)",
+                "send_at_command": lambda _self, cmd: "+VER=RYLR998_V1.0"})()
+            detail = ""
+            def enqueue(self, event): self.event = event
+
+        state1 = FakeConnectedState()
+        with patch.object(app, "STATE", state1):
+            resp1 = app._send_at_command_action("AT+VER?")
+            self.assertEqual(resp1, "+VER=RYLR998_V1.0")
+            self.assertIn("+VER=RYLR998_V1.0", state1.detail)
+
+        # 2. Disconnected
+        class FakeDisconnectedState:
+            lock = __import__("threading").RLock()
+            connected = False
+            transport = None
+            detail = ""
+            def enqueue(self, event): self.event = event
+
+        state2 = FakeDisconnectedState()
+        with patch.object(app, "STATE", state2):
+            with patch("groundstation.modem_check.send_raw_at_command", return_value="+OK") as mock_send:
+                resp2 = app._send_at_command_action("AT", port="/dev/ttyACM0", baud=115200)
+                self.assertEqual(resp2, "+OK")
+                self.assertIn("+OK", state2.detail)
+                self.assertEqual(mock_send.call_count, 1)
+
+        # 3. Invalid command
+        with self.assertRaises(ValueError):
+            app._send_at_command_action("INVALID")
+        with self.assertRaises(ValueError):
+            app._send_at_command_action("")
+
+
 if __name__ == "__main__":
     unittest.main()

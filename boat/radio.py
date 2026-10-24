@@ -195,7 +195,7 @@ class LoRaModemTransport:
             offset += written
         serial_obj.flush()
 
-    def _run_command(self, command, timeout, *, config=False, response_prefix=None):
+    def _run_command(self, command, timeout, *, config=False, response_prefix=None, raw_response=False):
         with self._command_lock:
             with self._state_lock:
                 serial_obj, generation = self._serial, self._generation
@@ -203,7 +203,8 @@ class LoRaModemTransport:
                 raise ConnectionError("LoRa modem is disconnected")
             done = threading.Event()
             pending = {"event": done, "result": None, "command": command,
-                       "generation": generation, "response_prefix": response_prefix}
+                       "generation": generation, "response_prefix": response_prefix,
+                       "raw_response": raw_response}
             with self._pending_lock:
                 self._pending = pending
             try:
@@ -223,6 +224,8 @@ class LoRaModemTransport:
                 self.stats["tx_errors"] += 1
                 raise TimeoutError(f"RYLR998 command timed out; outcome uncertain: {command[:32]!r}")
             result = pending["result"]
+            if raw_response:
+                return result
             valid_prefix = False
             if response_prefix is not None and isinstance(result, str):
                 if isinstance(response_prefix, tuple):
@@ -277,6 +280,22 @@ class LoRaModemTransport:
         if not line:
             return
         self.stats["rx_lines"] += 1
+        with self._state_lock:
+            current = generation == self._generation and serial_obj is self._serial
+        if not current:
+            return
+
+        with self._pending_lock:
+            pending = self._pending
+        if pending is not None and pending.get("raw_response") and pending["generation"] == generation:
+            if not line.startswith(b"+RCV=") and not line.startswith((b"+READY", b"+RESET")):
+                pending["result"] = line.decode("ascii", "replace")
+                with self._pending_lock:
+                    if self._pending is pending:
+                        self._pending = None
+                pending["event"].set()
+                return
+
         if line in (b"+OK",) or line.startswith(b"+ERR="):
             with self._state_lock:
                 current = generation == self._generation and serial_obj is self._serial
@@ -389,6 +408,20 @@ class LoRaModemTransport:
             raise TimeoutError("radio send acknowledgement timed out; outcome uncertain")
         if item.error:
             raise item.error
+
+    def send_at_command(self, command: str, timeout: float = 2.0) -> str:
+        """Send an arbitrary AT command and return the modem response string."""
+        if not self.is_connected:
+            raise ConnectionError("LoRa modem transport is disconnected")
+        clean = command.strip()
+        if not clean:
+            raise ValueError("Command cannot be empty")
+        if not clean.upper().startswith("AT"):
+            raise ValueError("Command must start with 'AT'")
+        crlf = chr(13) + chr(10)
+        cmd_bytes = clean.encode("ascii") + crlf.encode("ascii")
+        result = self._run_command(cmd_bytes, timeout, raw_response=True)
+        return str(result)
 
     def check_health(self):
         """Probe the attached modem and read back its local identity/settings.

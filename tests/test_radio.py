@@ -368,6 +368,19 @@ class RadioTransportTests(unittest.TestCase):
         self.assertIn(b"AT+PARAMETER=10,7,1,12\r\n", b"".join(serials[0].calls))
         transport.close()
 
+    def test_send_at_command_arbitrary_query(self):
+        transport, serials = self.make()
+        transport.open(lambda _frame: None)
+        serials[0].inject(b"+VER=RYLR998_V1.2.4\r\n")
+        resp = transport.send_at_command("AT+VER?")
+        self.assertEqual(resp, "+VER=RYLR998_V1.2.4")
+        self.assertIn(b"AT+VER?\r\n", serials[0].calls[-1])
+        with self.assertRaises(ValueError):
+            transport.send_at_command("INVALID")
+        with self.assertRaises(ValueError):
+            transport.send_at_command("")
+        transport.close()
+
     def test_modem_reset_after_ready_disconnects_and_requires_explicit_reopen(self):
         transport, serials = self.make()
         transport.open(lambda _frame: None)

@@ -290,5 +290,36 @@ class ModemCheckTests(unittest.TestCase):
         self.assertTrue(instances[0].closed)
 
 
+    def test_send_raw_at_command_and_cli_flag(self):
+        class MockSerial:
+            def __init__(self, port, baudrate, **kwargs):
+                self.port = port
+                self.baudrate = baudrate
+                self.closed = False
+                self.written = b""
+            def write(self, data):
+                self.written += data
+                return len(data)
+            def flush(self): pass
+            def readline(self):
+                if b"AT+VER?" in self.written:
+                    return b"+VER=RYLR998_V1.2.4\r\n"
+                return b"+OK\r\n"
+            def close(self):
+                self.closed = True
+
+        resp = modem_check.send_raw_at_command("AT+VER?", serial_factory=MockSerial)
+        self.assertEqual(resp, "+VER=RYLR998_V1.2.4")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = modem_check.main(["--port", "/dev/ttyACM0", "--at", "AT+VER?"], serial_factory=MockSerial)
+        self.assertEqual(code, 0)
+        self.assertIn("+VER=RYLR998_V1.2.4", buf.getvalue())
+
+        with self.assertRaises(ValueError):
+            modem_check.send_raw_at_command("BAD_CMD", serial_factory=MockSerial)
+
+
 if __name__ == "__main__":
     unittest.main()

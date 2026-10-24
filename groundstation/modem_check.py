@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from typing import Any
 
 from boat.radio import LoRaModemTransport
@@ -58,6 +59,43 @@ def verify_modem(
         transport.close()
 
 
+def send_raw_at_command(
+    command: str,
+    port: str = "/dev/ttyACM0",
+    baudrate: int = 115200,
+    *,
+    timeout: float = 1.0,
+    serial_factory: Any = None,
+) -> str:
+    """Send an arbitrary AT command to the serial port and return the response."""
+    clean = (command or "").strip()
+    if not clean:
+        raise ValueError("Command cannot be empty")
+    if not clean.upper().startswith("AT"):
+        raise ValueError("Command must start with 'AT'")
+    if serial_factory is None:
+        import serial
+        serial_factory = serial.Serial
+    ser = serial_factory(port, baudrate, timeout=timeout)
+    try:
+        crlf = chr(13) + chr(10)
+        ser.write(clean.encode("ascii") + crlf.encode("ascii"))
+        ser.flush()
+        start = time.monotonic()
+        lines = []
+        while time.monotonic() - start < timeout:
+            raw_line = ser.readline()
+            if raw_line:
+                decoded = raw_line.decode("ascii", errors="replace").strip()
+                if decoded:
+                    lines.append(decoded)
+                    if decoded == "+OK" or decoded.startswith("+ERR=") or decoded.startswith("+"):
+                        break
+        return " | ".join(lines) if lines else "(no response)"
+    finally:
+        ser.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m groundstation.modem_check",
@@ -86,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SF,BW,CR,PREAMBLE",
         help="RF parameters (default: 10,7,1,12)",
     )
+    parser.add_argument("--at", metavar="COMMAND", help="send arbitrary AT command and print response")
     parser.add_argument("--json", action="store_true", help="output structured JSON")
     return parser
 
@@ -155,6 +194,21 @@ def format_report_text(
 def main(argv: list[str] | None = None, *, serial_factory: Any = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.at:
+        try:
+            resp = send_raw_at_command(
+                args.at,
+                port=args.port,
+                baudrate=args.baud,
+                timeout=args.timeout,
+                serial_factory=serial_factory,
+            )
+            print(resp)
+            return 0
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     report = None
     error = None

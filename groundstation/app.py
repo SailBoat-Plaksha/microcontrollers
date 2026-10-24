@@ -185,6 +185,47 @@ def _check_modem_health(port=None, baud=115200, radio_settings=None):
     return report
 
 
+def _send_at_command_action(command_str, port=None, baud=115200):
+    with STATE.lock:
+        transport = STATE.transport
+        connected = STATE.connected
+    clean = (command_str or "").strip()
+    if not clean:
+        raise ValueError("AT command cannot be empty.")
+    if not clean.upper().startswith("AT"):
+        raise ValueError("AT command must start with 'AT'.")
+
+    if connected and transport is not None and callable(getattr(transport, "send_at_command", None)):
+        try:
+            resp = transport.send_at_command(clean)
+        except Exception as exc:
+            msg = f"{clean} -> error: {type(exc).__name__}: {exc}"
+            with STATE.lock:
+                STATE.detail = msg
+            STATE.enqueue(TransportLog(transport.name, msg))
+            return msg
+        transport_name = transport.name
+    elif port:
+        from .modem_check import send_raw_at_command
+        try:
+            resp = send_raw_at_command(clean, port=port, baudrate=int(baud), timeout=1.5)
+        except Exception as exc:
+            msg = f"{clean} -> error: {type(exc).__name__}: {exc}"
+            with STATE.lock:
+                STATE.detail = msg
+            STATE.enqueue(TransportLog("LoRa modem", msg))
+            return msg
+        transport_name = "LoRa modem (direct AT)"
+    else:
+        raise RuntimeError("No serial port specified and transport is not connected.")
+
+    msg = f"{clean} -> {resp}"
+    with STATE.lock:
+        STATE.detail = msg
+    STATE.enqueue(TransportLog(transport_name, msg))
+    return resp
+
+
 def _client_action(method, *args):
     with _ACTION_LOCK:
         with STATE.lock:
@@ -259,6 +300,10 @@ def build_ui(ui):
                     if port.value in ("/dev/ttyACM0", ""):
                         port.set_value("/dev/ttyUSB0")
             mode.on_value_change(on_mode_change)
+            with ui.row().classes("w-full flex-wrap items-end gap-3 mt-2"):
+                at_input = ui.input("Arbitrary AT command", value="AT+VER?").classes("w-72")
+                send_at_btn = ui.button("Send AT")
+                at_response = ui.label("").classes("text-sm font-mono text-slate-700 self-center")
 
         with ui.row().classes("w-full flex-wrap items-stretch"):
             with ui.card().classes("grow basis-80 min-w-0"):
@@ -354,6 +399,10 @@ def build_ui(ui):
                 is_lora = mode.value.startswith("LoRa · Pico USB UART0") or mode.value.startswith("LoRa · direct USB UART")
                 modem_health_btn.set_enabled(
                     (connected and callable(getattr(STATE.transport, "check_health", None)))
+                    or (not connected and is_lora)
+                )
+                send_at_btn.set_enabled(
+                    (connected and callable(getattr(STATE.transport, "send_at_command", None)))
                     or (not connected and is_lora)
                 )
                 read_imu_btn.set_enabled(connected)
@@ -483,6 +532,19 @@ def build_ui(ui):
             _call_background(_check_modem_health, port.value, baud.value, settings)
 
         modem_health_btn.on_click(check_modem_health_action)
+
+        def on_send_at():
+            cmd = at_input.value
+            def do_send():
+                try:
+                    resp = _send_at_command_action(cmd, port.value, baud.value)
+                    at_response.set_text(f"Reply: {resp}")
+                except Exception as exc:
+                    at_response.set_text(f"Error: {exc}")
+            _call_background(do_send)
+
+        send_at_btn.on_click(on_send_at)
+        at_input.on("keydown.enter", on_send_at)
         read_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "direct"))
         read_board_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "board"))
         absolute_btn.on_click(lambda: _call_background(_client_action, "set_absolute_angle",
