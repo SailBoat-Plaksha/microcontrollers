@@ -4,6 +4,8 @@ Status: FROZEN for the midsem parallel delivery. Base: `i2c+mavlink` at `13b58b2
 
 Source of truth for messages: `protocol/arsem.xml` (schema `1.1.0`: the eight existing custom messages are byte-identical to schema `1.0.0`; `ACTUATOR_REQUEST`, `NODE_HEALTH`, `REQUEST_RESULT`, new enums and `LINK_TYPE_I2C` are additive).
 
+The sensor addition is specified in [sensor contract](sensor-contract.md): `IMU_REQUEST` and `IMU_SAMPLE` are additive; the Pi is the only controller and brokers peripheral requests. Sensor Pico is component 159 at `0x0A`; LSM9DS1 registers remain directly accessible.
+
 ## 1. Identities
 
 | Node | system | component | I2C address | Role |
@@ -11,14 +13,15 @@ Source of truth for messages: `protocol/arsem.xml` (schema `1.1.0`: the eight ex
 | Pi (boat brain, sole bus controller) | 1 | 1 | controller | routes, validates, owns IMU reads |
 | Motor Pico (Pico 2) | 1 | 154 | 0x08 | servo/encoder actuator node |
 | Optional comms Pico (Pico 1) | 1 | 158 | 0x09 | radio relay + telemetry forwarder |
-| IMU | — | — | device-specific (driver-configurable, provisional) | passive peripheral; the Pi reads its registers |
+| Sensor Pico | 1 | 159 | 0x0A | requests, validates and reports Pi-supplied sensor data |
+| LSM9DS1 | — | — | AG 0x6A/0x6B; mag 0x1C/0x1E | register peripheral; Pi owns acquisition |
 | Ground station (GUI/CLI) | 255 | 190 | — | sole command origin for movement requests |
 
 `NODE_INFO.source` IDs identify the reporting node, never the relay. The Pi maps an upstream ground request (system 255) to local motor target (system 1, component 154) under its own source (1,1) and preserves correlation in both directions. Component 158 is provisional and noncolliding with 1 and 154.
 
 ## 2. Message set
 
-Supported: custom 200000–200010 plus standard `HEARTBEAT` (0), `PING` (4), `SCALED_IMU` (26). `ARSEM_MAILBOX_FRAME_BYTES` is 64, so every supported frame must encode to ≤ 64 bytes (including `LINK_STATUS`, which may encode to 36 bytes).
+Supported: custom 200000–200012 plus standard `HEARTBEAT` (0), `PING` (4), `SCALED_IMU` (26). `ARSEM_MAILBOX_FRAME_BYTES` is 64, so every supported frame must encode to ≤ 64 bytes (including `LINK_STATUS`, which may encode to 36 bytes).
 
 - **Movement**: ground issues ONLY `ACTUATOR_REQUEST` (200008). `opcode` selects ABSOLUTE (`delta_cdeg` = target), STEP (signed delta, resolved exactly once by the motor node against valid fresh feedback, then a bounded absolute target), or STOP (delta must be zero; STOP is distinct from a zero-degree target and distinct from a local timeout). Default GUI/CLI STEP is an angular jog (default ±5° = ±500 cdeg, configurable). `ACTUATOR_SETPOINT` (200001) keeps its existing bench semantics; production lanes do not send it.
 - **Motor response**: `ACTUATOR_STATUS` (200002) remains the motor snapshot. The fields production previously ignored — `timeout_ms`, `max_rate_cdeg_s` — are honored by the new motor adapter.
@@ -95,7 +98,7 @@ class BoatClient:
 
 ## 6. Generated bindings
 
-`protocol/gen/build_dialect.py` mechanically builds `protocol/gen/arsem_standalone.xml` from `arsem.xml` (custom messages/enums) plus the vendored official `HEARTBEAT`/`PING`/`SCALED_IMU` definitions and referenced enums (`protocol/gen/upstream/`, pinned in `SHA256SUMS`), then runs official `mavgen`. Generated C headers are under `protocol/gen/C/arsem_standalone/`; generated Python is `protocol/gen/arsem.py`. `tests/test_contract.py` pins each CRC_EXTRA (200000–200010, HEARTBEAT 50, PING and SCALED_IMU from official generation) and cross-decodes `protocol.codec` with generated Python and C on the host. Firmware includes the generated headers (or `mailbox.h` constants with `mavlink_min.c` on the legacy bench path only).
+`protocol/gen/build_dialect.py` mechanically builds `protocol/gen/arsem_standalone.xml` from `arsem.xml` (custom messages/enums) plus the vendored official `HEARTBEAT`/`PING`/`SCALED_IMU` definitions and referenced enums (`protocol/gen/upstream/`, pinned in `SHA256SUMS`), then runs official `mavgen`. Generated C headers are under `protocol/gen/C/arsem_standalone/`; generated Python is `protocol/gen/arsem.py`. `tests/test_contract.py` pins each CRC_EXTRA (200000–200012, HEARTBEAT 50, PING and SCALED_IMU from official generation) and cross-decodes `protocol.codec` with generated Python and C on the host. Firmware includes the generated headers (or `mailbox.h` constants with `mavlink_min.c` on the legacy bench path only).
 
 ## 7. Lane ownership (exclusive; no cross-lane edits)
 

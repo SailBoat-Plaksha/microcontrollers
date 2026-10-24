@@ -16,11 +16,13 @@ Laptop NiceGUI or CLI
 
 Motor results travel back through the same path. The Pi polls I2C replies; the Pico does not initiate I2C transfers. The optional sensor shares the bus and is read by the Pi. Neither radio endpoint needs a gateway Pico in this setup.
 
+The LSM9DS1 sensor addition is described in [sensor board setup](sensor-board.md). It adds direct reads and Pico mailbox requests while keeping the Pi as the only I2C controller.
+
 ## What each software addition does
 
 | Area | Change and reason |
 | --- | --- |
-| `protocol/arsem.xml`, `protocol/gen/` | Extended the boat message dictionary with actuator requests, node health and correlated results. Added official generated C/Python bindings for the 14 supported messages, including heartbeat, ping and IMU. This gives the Pi, laptop and MCUs the same field order, units and CRC definitions. |
+| `protocol/arsem.xml`, `protocol/gen/` | Extended the boat message dictionary with actuator requests, node health and correlated results. Added official generated C/Python bindings for the 16 supported messages, including heartbeat, ping and IMU. This gives the Pi, laptop and MCUs the same field order, units and CRC definitions. |
 | `protocol/codec.py`, `mavlink_min.c`, `mailbox.h` | Updated supported message encoding/validation and specified 64-byte I2C frames. The old isolated timed-motor bench still has its own definitions and 32-byte reply. |
 | `boat/client.py` | Added one shared application client for GUI and CLI: connect, ping, absolute angle, relative STEP, STOP, health and telemetry. It matches results to requests, suppresses duplicates, checks fresh motor state, handles reconnect/reboot, and reports uncertain execution as UNKNOWN instead of repeating movement. |
 | `boat/radio.py` | Added the direct host-side RYLR998 driver, used by laptop and Pi. It configures the modem, wraps binary MAVLink in Base64 `AT+SEND`, unwraps `+RCV`, handles fragmented input, timeouts/errors and bounded queues, and prioritizes STOP. Receive callbacks run separately from ACK parsing. Modem health queries read local settings and identity. |
