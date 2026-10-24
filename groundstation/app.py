@@ -42,7 +42,7 @@ def _call_background(fn, *args):
         except Exception as exc:
             STATE.enqueue(exc)
             with STATE.lock:
-                STATE.detail = f"{type(exc).__name__}: {exc}"
+                STATE.detail = str(exc) if isinstance(exc, ValueError) else f"{type(exc).__name__}: {exc}"
                 if isinstance(exc, ValueError):
                     STATE.busy = False
                     STATE.uncertain = False
