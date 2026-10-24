@@ -50,7 +50,12 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "radio":
         config = replace(config, comms_enabled=False)
     lock = _lock_bus()
-    bus = _sim_bus(config) if args.simulate else SMBus2Adapter(config.bus_number)
+    try:
+        bus = _sim_bus(config) if args.simulate else SMBus2Adapter(config.bus_number)
+    except BaseException:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+        raise
     stopping = False
 
     def stop_signal(_signum, _frame):
@@ -91,9 +96,11 @@ def _run(args: argparse.Namespace) -> int:
         else:
             _run_bridge(router, lambda: stopping)
     finally:
-        router.close()
-        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        lock.close()
+        try:
+            router.close()
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
     return 0
 
 
@@ -120,24 +127,33 @@ def _run_radio_service(router: BoatRouter, transport, stopping, *, sleep=time.sl
     previous_on_frame = router.on_frame
 
     def receive(frame: bytes) -> None:
+        payload = bytes(frame)
+        # Decode in the callback before assigning STOP priority. The router
+        # still performs the full source, target, authority, and policy checks.
         try:
-            incoming.put_nowait(bytes(frame))
+            message = codec.decode(payload)
+            fields = message["fields"]
+            is_stop = (message["name"] == "ACTUATOR_REQUEST" and
+                       fields.get("opcode") == 3)
+        except (ValueError, KeyError, TypeError, struct.error):
+            is_stop = False
+        try:
+            incoming.put_nowait(payload)
         except queue.Full:
+            if is_stop:
+                with incoming.mutex:
+                    index = next((i for i, item in enumerate(incoming.queue)
+                                  if not _radio_is_stop(item)), None)
+                    if index is not None:
+                        del incoming.queue[index]
+                        incoming.queue.append(payload)
+                        incoming.not_empty.notify()
+                        return
             print("radio ingress queue full; frame dropped", file=sys.stderr, flush=True)
 
     def send(frame: bytes) -> None:
         payload = bytes(frame)
-        try:
-            outgoing.put_nowait(payload)
-        except queue.Full:
-            try:
-                name = codec.decode(payload)["name"]
-            except (ValueError, KeyError, struct.error):
-                name = "undecodable"
-            detail = (f"delivery unknown: radio egress queue full; REQUEST_RESULT was dropped"
-                      if name == "REQUEST_RESULT" else
-                      f"radio egress queue full; {name} frame was dropped")
-            print(detail, file=sys.stderr, flush=True)
+        _enqueue_radio(outgoing, payload)
 
     def report_modem_errors() -> None:
         lines = getattr(transport, "stderr_lines", None)
@@ -170,7 +186,9 @@ def _run_radio_service(router: BoatRouter, transport, stopping, *, sleep=time.sl
                     break
                 router.submit_frame(frame, ingress="radio")
             router.step()
-            while True:
+            # A slow UART must not monopolize this scheduler pass: continue
+            # polling the motor (including the STOP path) every iteration.
+            for _index in range(min(outgoing.qsize(), 8)):
                 try:
                     response = outgoing.get_nowait()
                 except queue.Empty:
@@ -236,6 +254,74 @@ def _frame_priority(frame: bytes) -> int:
     except (ValueError, KeyError, struct.error):
         return 1
     return 0 if name in ("REQUEST_RESULT", "ACTUATOR_STATUS", "NODE_HEALTH", "HEARTBEAT") else 1
+
+
+def _radio_message(frame: bytes) -> dict | None:
+    try:
+        return codec.decode(frame)
+    except (ValueError, KeyError, TypeError, struct.error):
+        return None
+
+
+def _radio_is_stop(frame: bytes) -> bool:
+    message = _radio_message(frame)
+    return bool(message and message["name"] == "ACTUATOR_REQUEST" and
+                message["fields"].get("opcode") == 3)
+
+
+def _radio_identity(frame: bytes) -> tuple | None:
+    message = _radio_message(frame)
+    if not message:
+        return None
+    name, fields = message["name"], message["fields"]
+    source = (message["system"], message["component"])
+    if name == "REQUEST_RESULT":
+        return (name, fields["ground_session"], fields["request_id"])
+    if name == "ACTUATOR_STATUS":
+        return (name, source, fields["actuator"])
+    if name in ("NODE_HEALTH", "HEARTBEAT", "SCALED_IMU"):
+        return (name, source)
+    return None
+
+
+def _enqueue_radio(outgoing: queue.Queue, frame: bytes) -> bool:
+    """Bound radio egress, retaining latest snapshots and correlated results."""
+    payload = bytes(frame)
+    message = _radio_message(payload)
+    identity = _radio_identity(payload)
+    priority = _frame_priority(payload)
+    with outgoing.mutex:
+        items = outgoing.queue
+        if identity is not None:
+            for index, queued in enumerate(items):
+                if _radio_identity(queued) == identity:
+                    items[index] = payload
+                    return True
+        if len(items) < outgoing.maxsize:
+            index = next((i for i, queued in enumerate(items)
+                          if priority < _frame_priority(queued)), len(items))
+            items.insert(index, payload)
+            outgoing.not_empty.notify()
+            return True
+        if priority == 0:
+            routine = next((i for i, queued in enumerate(items)
+                            if _frame_priority(queued) != 0), None)
+            if routine is not None:
+                del items[routine]
+                index = next((i for i, queued in enumerate(items)
+                              if _frame_priority(queued) != 0), len(items))
+                items.insert(index, payload)
+                outgoing.not_empty.notify()
+                return True
+    name = message["name"] if message else "undecodable"
+    if name == "REQUEST_RESULT":
+        fields = message["fields"]
+        print("delivery unknown: radio egress queue full; "
+              f"REQUEST_RESULT session={fields['ground_session']} "
+              f"request_id={fields['request_id']} was not queued", file=sys.stderr, flush=True)
+    else:
+        print(f"radio egress queue full; {name} frame was not queued", file=sys.stderr, flush=True)
+    return False
 
 
 def _enqueue_stdout(outgoing: queue.Queue, frame: bytes) -> bool:
