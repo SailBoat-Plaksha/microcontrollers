@@ -5,8 +5,12 @@ import utime
 
 
 def query(uart, command, expected, timeout_ms=1000):
-    while uart.any():
-        uart.read()
+    # Bound the drain even if unrelated radio data keeps arriving.
+    for _ in range(4):
+        available = uart.any()
+        if not available:
+            break
+        uart.read(min(available, 128))
     wire = command + b"\r\n"
     if uart.write(wire) != len(wire):
         print("UART write incomplete:", command)
