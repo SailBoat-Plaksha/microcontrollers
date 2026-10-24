@@ -139,7 +139,7 @@ class LSM9DS1:
             counts = self._read_axes(self.ag_address, self._OUT_X_L_XL, "AG")
             accel = tuple(count * 0.061 for count in counts)
             valid |= self.ACCEL_VALID
-        if ag_status & 0x08:
+        if ag_status & 0x02:
             counts = self._read_axes(self.ag_address, self._OUT_X_L_G, "AG")
             # 8.75 mdps/LSB * pi/180 converts millidegrees/s to milliradians/s.
             gyro = tuple(count * (8.75 * math.pi / 180.0) for count in counts)
@@ -154,6 +154,9 @@ class LSM9DS1:
         return LSM9DS1Sample(accel, gyro, mag, valid, self._clock())
 
     def _read_axes(self, address: int, register: int, bank: str) -> tuple[int, int, int]:
+        # Magnetometer I2C burst increment uses SUB[7], unlike AG CTRL_REG8.
+        if bank == "M":
+            register |= 0x80
         raw = self._read(address, register, 6, bank)
         return tuple(int.from_bytes(raw[i:i + 2], "little", signed=True)
                      for i in (0, 2, 4))
