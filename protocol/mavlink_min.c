@@ -3,8 +3,8 @@
 
 /* CRC_EXTRA values generated from the pinned dialect with official mavgen. */
 static int extra_for(uint32_t id) {
-    static const uint8_t custom[] = {139, 49, 131, 143, 158, 201, 198, 121, 188, 90, 56};
-    if (id >= 200000u && id <= 200010u) return custom[id - 200000u];
+    static const uint8_t custom[] = {139, 49, 131, 143, 158, 201, 198, 121, 188, 90, 56, 71, 32};
+    if (id >= 200000u && id <= 200012u) return custom[id - 200000u];
     if (id == 0u) return 50; /* common.xml HEARTBEAT */
     if (id == 4u) return 237; /* common.xml PING */
     if (id == 26u) return 170; /* common.xml SCALED_IMU */

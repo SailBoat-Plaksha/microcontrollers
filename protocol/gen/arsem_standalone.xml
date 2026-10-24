@@ -297,6 +297,21 @@
         <description>Debug and diagnostic traffic.</description>
       </entry>
     </enum>
+    <enum name="IMU_PATH">
+      <entry value="0" name="IMU_PATH_DIRECT">
+        <description>Pi reads the IMU directly.</description>
+      </entry>
+      <entry value="1" name="IMU_PATH_SENSOR_PICO">
+        <description>Pi supplies IMU readings to the sensor Pico mailbox for validation and reporting.</description>
+      </entry>
+    </enum>
+    <enum name="IMU_STATUS">
+      <entry value="1" name="IMU_STATUS_OK" />
+      <entry value="2" name="IMU_STATUS_NOT_READY" />
+      <entry value="3" name="IMU_STATUS_UNAVAILABLE" />
+      <entry value="4" name="IMU_STATUS_TIMEOUT" />
+      <entry value="5" name="IMU_STATUS_REJECTED" />
+    </enum>
     <enum name="MAV_AUTOPILOT">
       <description>Micro air vehicle / autopilot classes. This identifies the individual model.</description>
       <entry value="0" name="MAV_AUTOPILOT_GENERIC">
@@ -698,6 +713,41 @@
       <field type="uint8_t" name="state" enum="MOTOR_STATE">Motor-side state observation associated with this outcome.</field>
       <field type="uint8_t" name="target_system">System ID of the originating ground client.</field>
       <field type="uint8_t" name="target_component">Component ID of the originating ground client.</field>
+    </message>
+    <message id="200011" name="IMU_REQUEST">
+      <description>Request IMU data through the Pi broker. Ground targets Pi 1/1. Pi forwards board requests to sensor Pico 1/159. The Pico can request a dependency from Pi in its polled mailbox; session zero is reserved for board-local requests. Pi remains sole I2C controller.</description>
+      <field type="uint32_t" name="ground_session">Ground session; zero for board-local requests.</field>
+      <field type="uint32_t" name="request_id">Monotonic request identifier within the session.</field>
+      <field type="uint16_t" name="timeout_ms" units="ms">Bounded request deadline, 1..5000 ms.</field>
+      <field type="uint16_t" name="max_age_ms" units="ms">Maximum cached sample age; zero requires a new sensor read.</field>
+      <field type="uint8_t" name="path" enum="IMU_PATH">Requested response path.</field>
+      <field type="uint8_t" name="target_system">Recipient system.</field>
+      <field type="uint8_t" name="target_component">Recipient component.</field>
+    </message>
+    <message id="200012" name="IMU_SAMPLE">
+      <description>Correlated nine-axis sample or explicit failure. Acquisition owner is Pi 1; sensor Pico may validate and forward it without claiming acquisition. time_boot_ms is acquisition time relative to acquisition_boot_id. Invalid fields are zero and must not be used. Unsigned frame is at most 63 bytes.</description>
+      <field type="uint32_t" name="ground_session">Request session.</field>
+      <field type="uint32_t" name="request_id">Request identifier.</field>
+      <field type="uint32_t" name="time_boot_ms" units="ms">Acquisition owner's monotonic boot-relative acquisition timestamp.</field>
+      <field type="uint32_t" name="sample_seq">Acquisition owner's sample sequence, increments only on new successful reads.</field>
+      <field type="uint32_t" name="acquisition_boot_id">Pi boot identity at acquisition.</field>
+      <field type="uint32_t" name="source_boot_id">Reporting node boot identity.</field>
+      <field type="uint16_t" name="sample_age_ms" units="ms">Sample age at emission, saturated at 65535.</field>
+      <field type="uint16_t" name="valid_fields" enum="SENSOR_VALID_FIELDS">Measured field bits: accel 1, gyro 2, magnetometer 4. Temperature is not included.</field>
+      <field type="int16_t" name="xacc" units="mG">X acceleration, milligravity.</field>
+      <field type="int16_t" name="yacc" units="mG">Y acceleration.</field>
+      <field type="int16_t" name="zacc" units="mG">Z acceleration.</field>
+      <field type="int16_t" name="xgyro" units="mrad/s">X angular rate.</field>
+      <field type="int16_t" name="ygyro" units="mrad/s">Y angular rate.</field>
+      <field type="int16_t" name="zgyro" units="mrad/s">Z angular rate.</field>
+      <field type="int16_t" name="xmag" units="mgauss">X magnetic field.</field>
+      <field type="int16_t" name="ymag" units="mgauss">Y magnetic field.</field>
+      <field type="int16_t" name="zmag" units="mgauss">Z magnetic field.</field>
+      <field type="uint8_t" name="status" enum="IMU_STATUS">Result; non-OK samples have valid_fields zero.</field>
+      <field type="uint8_t" name="path" enum="IMU_PATH">Response path.</field>
+      <field type="uint8_t" name="acquisition_component">Pi component 1.</field>
+      <field type="uint8_t" name="target_system">Recipient system.</field>
+      <field type="uint8_t" name="target_component">Recipient component.</field>
     </message>
     <message id="0" name="HEARTBEAT">
       <description>The heartbeat message shows that a system or component is present and responding. The type and autopilot fields (along with the message component id), allow the receiving system to treat further messages from this system appropriately (e.g. by laying out the user interface based on the autopilot). This microservice is documented at https://mavlink.io/en/services/heartbeat.html</description>

@@ -17,11 +17,13 @@
 
 /* Provisional addresses; verify against real devices before wiring. */
 #define ARSEM_I2C_ADDR_MOTOR 0x08
+#define ARSEM_I2C_ADDR_SENSOR 0x0A
 #define ARSEM_I2C_ADDR_COMMS_SENSOR 0x09
 
 /* System and component identities. */
 #define ARSEM_SYSTEM_BOAT 1
 #define ARSEM_COMPONENT_PI 1
+#define ARSEM_COMPONENT_SENSOR 159
 #define ARSEM_COMPONENT_MOTOR 154
 #define ARSEM_COMPONENT_COMMS_SENSOR 158
 #define ARSEM_SYSTEM_GROUND 255

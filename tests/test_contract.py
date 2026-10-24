@@ -23,8 +23,8 @@ def field_values(message_id):
 
 class ProtocolContract(unittest.TestCase):
     def test_crc_values_and_frame_sizes(self):
-        expected = {**dict(zip(range(200000, 200011),
-                               (139, 49, 131, 143, 158, 201, 198, 121, 188, 90, 56))),
+        expected = {**dict(zip(range(200000, 200013),
+                               (139, 49, 131, 143, 158, 201, 198, 121, 188, 90, 56, 71, 32))),
                     0: 50, 4: 237, 26: 170}
         self.assertEqual(set(codec.MESSAGES), set(expected))
         for message_id, crc_extra in expected.items():
@@ -62,6 +62,8 @@ class ProtocolContract(unittest.TestCase):
         mapping = {
             "SYSTEM_BOAT": "ARSEM_SYSTEM_BOAT",
             "COMPONENT_PI": "ARSEM_COMPONENT_PI",
+            "COMPONENT_SENSOR": "ARSEM_COMPONENT_SENSOR",
+            "I2C_ADDR_SENSOR": "ARSEM_I2C_ADDR_SENSOR",
             "COMPONENT_MOTOR": "ARSEM_COMPONENT_MOTOR",
             "COMPONENT_COMMS_SENSOR": "ARSEM_COMPONENT_COMMS_SENSOR",
             "SYSTEM_GROUND": "ARSEM_SYSTEM_GROUND",

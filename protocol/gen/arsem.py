@@ -614,6 +614,32 @@ enums["BUS_STREAM_FLAGS"][16] = EnumEntry("BUS_STREAM_FLAGS_DIAGNOSTIC", """Debu
 BUS_STREAM_FLAGS_ENUM_END = 17
 enums["BUS_STREAM_FLAGS"][17] = EnumEntry("BUS_STREAM_FLAGS_ENUM_END", """""")
 
+# IMU_PATH
+enums["IMU_PATH"] = Enum()
+enums["IMU_PATH"].bitmask = False
+IMU_PATH_DIRECT = 0
+enums["IMU_PATH"][0] = EnumEntry("IMU_PATH_DIRECT", """Pi reads the IMU directly.""")
+IMU_PATH_SENSOR_PICO = 1
+enums["IMU_PATH"][1] = EnumEntry("IMU_PATH_SENSOR_PICO", """Pi supplies IMU readings to the sensor Pico mailbox for validation and reporting.""")
+IMU_PATH_ENUM_END = 2
+enums["IMU_PATH"][2] = EnumEntry("IMU_PATH_ENUM_END", """""")
+
+# IMU_STATUS
+enums["IMU_STATUS"] = Enum()
+enums["IMU_STATUS"].bitmask = False
+IMU_STATUS_OK = 1
+enums["IMU_STATUS"][1] = EnumEntry("IMU_STATUS_OK", """""")
+IMU_STATUS_NOT_READY = 2
+enums["IMU_STATUS"][2] = EnumEntry("IMU_STATUS_NOT_READY", """""")
+IMU_STATUS_UNAVAILABLE = 3
+enums["IMU_STATUS"][3] = EnumEntry("IMU_STATUS_UNAVAILABLE", """""")
+IMU_STATUS_TIMEOUT = 4
+enums["IMU_STATUS"][4] = EnumEntry("IMU_STATUS_TIMEOUT", """""")
+IMU_STATUS_REJECTED = 5
+enums["IMU_STATUS"][5] = EnumEntry("IMU_STATUS_REJECTED", """""")
+IMU_STATUS_ENUM_END = 6
+enums["IMU_STATUS"][6] = EnumEntry("IMU_STATUS_ENUM_END", """""")
+
 # MAV_AUTOPILOT
 enums["MAV_AUTOPILOT"] = Enum()
 enums["MAV_AUTOPILOT"].bitmask = False
@@ -830,6 +856,8 @@ MAVLINK_MSG_ID_BUS_GRANT = 200007
 MAVLINK_MSG_ID_ACTUATOR_REQUEST = 200008
 MAVLINK_MSG_ID_NODE_HEALTH = 200009
 MAVLINK_MSG_ID_REQUEST_RESULT = 200010
+MAVLINK_MSG_ID_IMU_REQUEST = 200011
+MAVLINK_MSG_ID_IMU_SAMPLE = 200012
 MAVLINK_MSG_ID_HEARTBEAT = 0
 MAVLINK_MSG_ID_PING = 4
 MAVLINK_MSG_ID_SCALED_IMU = 26
@@ -1353,6 +1381,116 @@ class MAVLink_request_result_message(MAVLink_message):
 setattr(MAVLink_request_result_message, "name", mavlink_msg_deprecated_name_property())
 
 
+class MAVLink_imu_request_message(MAVLink_message):
+    """
+    Request IMU data through the Pi broker. Ground targets Pi 1/1. Pi
+    forwards board requests to sensor Pico 1/159. The Pico can request
+    a dependency from Pi in its polled mailbox; session zero is
+    reserved for board-local requests. Pi remains sole I2C controller.
+    """
+
+    id = MAVLINK_MSG_ID_IMU_REQUEST
+    msgname = "IMU_REQUEST"
+    fieldnames = ["ground_session", "request_id", "timeout_ms", "max_age_ms", "path", "target_system", "target_component"]
+    ordered_fieldnames = ["ground_session", "request_id", "timeout_ms", "max_age_ms", "path", "target_system", "target_component"]
+    fieldtypes = ["uint32_t", "uint32_t", "uint16_t", "uint16_t", "uint8_t", "uint8_t", "uint8_t"]
+    fielddisplays_by_name: Dict[str, str] = {}
+    fieldenums_by_name: Dict[str, str] = {"path": "IMU_PATH"}
+    fieldunits_by_name: Dict[str, str] = {"timeout_ms": "ms", "max_age_ms": "ms"}
+    native_format = bytearray(b"<IIHHBBB")
+    orders = [0, 1, 2, 3, 4, 5, 6]
+    lengths = [1, 1, 1, 1, 1, 1, 1]
+    array_lengths = [0, 0, 0, 0, 0, 0, 0]
+    crc_extra = 71
+    unpacker = struct.Struct("<IIHHBBB")
+    instance_field = None
+    instance_offset = -1
+
+    def __init__(self, ground_session: int, request_id: int, timeout_ms: int, max_age_ms: int, path: int, target_system: int, target_component: int):
+        MAVLink_message.__init__(self, MAVLink_imu_request_message.id, MAVLink_imu_request_message.msgname)
+        self._fieldnames = MAVLink_imu_request_message.fieldnames
+        self._instance_field = MAVLink_imu_request_message.instance_field
+        self._instance_offset = MAVLink_imu_request_message.instance_offset
+        self.ground_session = ground_session
+        self.request_id = request_id
+        self.timeout_ms = timeout_ms
+        self.max_age_ms = max_age_ms
+        self.path = path
+        self.target_system = target_system
+        self.target_component = target_component
+
+    def pack(self, mav: "MAVLink", force_mavlink1: bool = False) -> bytes:
+        return self._pack(mav, self.crc_extra, self.unpacker.pack(self.ground_session, self.request_id, self.timeout_ms, self.max_age_ms, self.path, self.target_system, self.target_component), force_mavlink1=force_mavlink1)
+
+
+# Define name on the class for backwards compatibility (it is now msgname).
+# Done with setattr to hide the class variable from mypy.
+setattr(MAVLink_imu_request_message, "name", mavlink_msg_deprecated_name_property())
+
+
+class MAVLink_imu_sample_message(MAVLink_message):
+    """
+    Correlated nine-axis sample or explicit failure. Acquisition owner
+    is Pi 1; sensor Pico may validate and forward it without claiming
+    acquisition. time_boot_ms is acquisition time relative to
+    acquisition_boot_id. Invalid fields are zero and must not be used.
+    Unsigned frame is at most 63 bytes.
+    """
+
+    id = MAVLINK_MSG_ID_IMU_SAMPLE
+    msgname = "IMU_SAMPLE"
+    fieldnames = ["ground_session", "request_id", "time_boot_ms", "sample_seq", "acquisition_boot_id", "source_boot_id", "sample_age_ms", "valid_fields", "xacc", "yacc", "zacc", "xgyro", "ygyro", "zgyro", "xmag", "ymag", "zmag", "status", "path", "acquisition_component", "target_system", "target_component"]
+    ordered_fieldnames = ["ground_session", "request_id", "time_boot_ms", "sample_seq", "acquisition_boot_id", "source_boot_id", "sample_age_ms", "valid_fields", "xacc", "yacc", "zacc", "xgyro", "ygyro", "zgyro", "xmag", "ymag", "zmag", "status", "path", "acquisition_component", "target_system", "target_component"]
+    fieldtypes = ["uint32_t", "uint32_t", "uint32_t", "uint32_t", "uint32_t", "uint32_t", "uint16_t", "uint16_t", "int16_t", "int16_t", "int16_t", "int16_t", "int16_t", "int16_t", "int16_t", "int16_t", "int16_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t", "uint8_t"]
+    fielddisplays_by_name: Dict[str, str] = {"valid_fields": "bitmask"}
+    fieldenums_by_name: Dict[str, str] = {"valid_fields": "SENSOR_VALID_FIELDS", "status": "IMU_STATUS", "path": "IMU_PATH"}
+    fieldunits_by_name: Dict[str, str] = {"time_boot_ms": "ms", "sample_age_ms": "ms", "xacc": "mG", "yacc": "mG", "zacc": "mG", "xgyro": "mrad/s", "ygyro": "mrad/s", "zgyro": "mrad/s", "xmag": "mgauss", "ymag": "mgauss", "zmag": "mgauss"}
+    native_format = bytearray(b"<IIIIIIHHhhhhhhhhhBBBBB")
+    orders = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    lengths = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    array_lengths = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    crc_extra = 32
+    unpacker = struct.Struct("<IIIIIIHHhhhhhhhhhBBBBB")
+    instance_field = None
+    instance_offset = -1
+
+    def __init__(self, ground_session: int, request_id: int, time_boot_ms: int, sample_seq: int, acquisition_boot_id: int, source_boot_id: int, sample_age_ms: int, valid_fields: int, xacc: int, yacc: int, zacc: int, xgyro: int, ygyro: int, zgyro: int, xmag: int, ymag: int, zmag: int, status: int, path: int, acquisition_component: int, target_system: int, target_component: int):
+        MAVLink_message.__init__(self, MAVLink_imu_sample_message.id, MAVLink_imu_sample_message.msgname)
+        self._fieldnames = MAVLink_imu_sample_message.fieldnames
+        self._instance_field = MAVLink_imu_sample_message.instance_field
+        self._instance_offset = MAVLink_imu_sample_message.instance_offset
+        self.ground_session = ground_session
+        self.request_id = request_id
+        self.time_boot_ms = time_boot_ms
+        self.sample_seq = sample_seq
+        self.acquisition_boot_id = acquisition_boot_id
+        self.source_boot_id = source_boot_id
+        self.sample_age_ms = sample_age_ms
+        self.valid_fields = valid_fields
+        self.xacc = xacc
+        self.yacc = yacc
+        self.zacc = zacc
+        self.xgyro = xgyro
+        self.ygyro = ygyro
+        self.zgyro = zgyro
+        self.xmag = xmag
+        self.ymag = ymag
+        self.zmag = zmag
+        self.status = status
+        self.path = path
+        self.acquisition_component = acquisition_component
+        self.target_system = target_system
+        self.target_component = target_component
+
+    def pack(self, mav: "MAVLink", force_mavlink1: bool = False) -> bytes:
+        return self._pack(mav, self.crc_extra, self.unpacker.pack(self.ground_session, self.request_id, self.time_boot_ms, self.sample_seq, self.acquisition_boot_id, self.source_boot_id, self.sample_age_ms, self.valid_fields, self.xacc, self.yacc, self.zacc, self.xgyro, self.ygyro, self.zgyro, self.xmag, self.ymag, self.zmag, self.status, self.path, self.acquisition_component, self.target_system, self.target_component), force_mavlink1=force_mavlink1)
+
+
+# Define name on the class for backwards compatibility (it is now msgname).
+# Done with setattr to hide the class variable from mypy.
+setattr(MAVLink_imu_sample_message, "name", mavlink_msg_deprecated_name_property())
+
+
 class MAVLink_heartbeat_message(MAVLink_message):
     """
     The heartbeat message shows that a system or component is present
@@ -1506,6 +1644,8 @@ mavlink_map: Dict[int, Type[MAVLink_message]] = {
     MAVLINK_MSG_ID_ACTUATOR_REQUEST: MAVLink_actuator_request_message,
     MAVLINK_MSG_ID_NODE_HEALTH: MAVLink_node_health_message,
     MAVLINK_MSG_ID_REQUEST_RESULT: MAVLink_request_result_message,
+    MAVLINK_MSG_ID_IMU_REQUEST: MAVLink_imu_request_message,
+    MAVLINK_MSG_ID_IMU_SAMPLE: MAVLink_imu_sample_message,
     MAVLINK_MSG_ID_HEARTBEAT: MAVLink_heartbeat_message,
     MAVLINK_MSG_ID_PING: MAVLink_ping_message,
     MAVLINK_MSG_ID_SCALED_IMU: MAVLink_scaled_imu_message,
@@ -2306,6 +2446,112 @@ class MAVLink(object):
 
         """
         self.send(self.request_result_encode(ground_session, request_id, motor_boot_id, local_command_id, result, state, target_system, target_component), force_mavlink1=force_mavlink1)
+
+    def imu_request_encode(self, ground_session: int, request_id: int, timeout_ms: int, max_age_ms: int, path: int, target_system: int, target_component: int) -> MAVLink_imu_request_message:
+        """
+        Request IMU data through the Pi broker. Ground targets Pi 1/1. Pi
+        forwards board requests to sensor Pico 1/159. The Pico can
+        request a dependency from Pi in its polled mailbox; session
+        zero is reserved for board-local requests. Pi remains sole I2C
+        controller.
+
+        ground_session            : Ground session; zero for board-local requests. (type:uint32_t)
+        request_id                : Monotonic request identifier within the session. (type:uint32_t)
+        timeout_ms                : Bounded request deadline, 1..5000 ms. [ms] (type:uint16_t)
+        max_age_ms                : Maximum cached sample age; zero requires a new sensor read. [ms] (type:uint16_t)
+        path                      : Requested response path. (type:uint8_t, values:IMU_PATH)
+        target_system             : Recipient system. (type:uint8_t)
+        target_component          : Recipient component. (type:uint8_t)
+
+        """
+        return MAVLink_imu_request_message(ground_session, request_id, timeout_ms, max_age_ms, path, target_system, target_component)
+
+    def imu_request_send(self, ground_session: int, request_id: int, timeout_ms: int, max_age_ms: int, path: int, target_system: int, target_component: int, force_mavlink1: bool = False) -> None:
+        """
+        Request IMU data through the Pi broker. Ground targets Pi 1/1. Pi
+        forwards board requests to sensor Pico 1/159. The Pico can
+        request a dependency from Pi in its polled mailbox; session
+        zero is reserved for board-local requests. Pi remains sole I2C
+        controller.
+
+        ground_session            : Ground session; zero for board-local requests. (type:uint32_t)
+        request_id                : Monotonic request identifier within the session. (type:uint32_t)
+        timeout_ms                : Bounded request deadline, 1..5000 ms. [ms] (type:uint16_t)
+        max_age_ms                : Maximum cached sample age; zero requires a new sensor read. [ms] (type:uint16_t)
+        path                      : Requested response path. (type:uint8_t, values:IMU_PATH)
+        target_system             : Recipient system. (type:uint8_t)
+        target_component          : Recipient component. (type:uint8_t)
+
+        """
+        self.send(self.imu_request_encode(ground_session, request_id, timeout_ms, max_age_ms, path, target_system, target_component), force_mavlink1=force_mavlink1)
+
+    def imu_sample_encode(self, ground_session: int, request_id: int, time_boot_ms: int, sample_seq: int, acquisition_boot_id: int, source_boot_id: int, sample_age_ms: int, valid_fields: int, xacc: int, yacc: int, zacc: int, xgyro: int, ygyro: int, zgyro: int, xmag: int, ymag: int, zmag: int, status: int, path: int, acquisition_component: int, target_system: int, target_component: int) -> MAVLink_imu_sample_message:
+        """
+        Correlated nine-axis sample or explicit failure. Acquisition owner is
+        Pi 1; sensor Pico may validate and forward it without claiming
+        acquisition. time_boot_ms is acquisition time relative to
+        acquisition_boot_id. Invalid fields are zero and must not be
+        used. Unsigned frame is at most 63 bytes.
+
+        ground_session            : Request session. (type:uint32_t)
+        request_id                : Request identifier. (type:uint32_t)
+        time_boot_ms              : Acquisition owner's monotonic boot-relative acquisition timestamp. [ms] (type:uint32_t)
+        sample_seq                : Acquisition owner's sample sequence, increments only on new successful reads. (type:uint32_t)
+        acquisition_boot_id        : Pi boot identity at acquisition. (type:uint32_t)
+        source_boot_id            : Reporting node boot identity. (type:uint32_t)
+        sample_age_ms             : Sample age at emission, saturated at 65535. [ms] (type:uint16_t)
+        valid_fields              : Measured field bits: accel 1, gyro 2, magnetometer 4. Temperature is not included. (type:uint16_t, values:SENSOR_VALID_FIELDS)
+        xacc                      : X acceleration, milligravity. [mG] (type:int16_t)
+        yacc                      : Y acceleration. [mG] (type:int16_t)
+        zacc                      : Z acceleration. [mG] (type:int16_t)
+        xgyro                     : X angular rate. [mrad/s] (type:int16_t)
+        ygyro                     : Y angular rate. [mrad/s] (type:int16_t)
+        zgyro                     : Z angular rate. [mrad/s] (type:int16_t)
+        xmag                      : X magnetic field. [mgauss] (type:int16_t)
+        ymag                      : Y magnetic field. [mgauss] (type:int16_t)
+        zmag                      : Z magnetic field. [mgauss] (type:int16_t)
+        status                    : Result; non-OK samples have valid_fields zero. (type:uint8_t, values:IMU_STATUS)
+        path                      : Response path. (type:uint8_t, values:IMU_PATH)
+        acquisition_component        : Pi component 1. (type:uint8_t)
+        target_system             : Recipient system. (type:uint8_t)
+        target_component          : Recipient component. (type:uint8_t)
+
+        """
+        return MAVLink_imu_sample_message(ground_session, request_id, time_boot_ms, sample_seq, acquisition_boot_id, source_boot_id, sample_age_ms, valid_fields, xacc, yacc, zacc, xgyro, ygyro, zgyro, xmag, ymag, zmag, status, path, acquisition_component, target_system, target_component)
+
+    def imu_sample_send(self, ground_session: int, request_id: int, time_boot_ms: int, sample_seq: int, acquisition_boot_id: int, source_boot_id: int, sample_age_ms: int, valid_fields: int, xacc: int, yacc: int, zacc: int, xgyro: int, ygyro: int, zgyro: int, xmag: int, ymag: int, zmag: int, status: int, path: int, acquisition_component: int, target_system: int, target_component: int, force_mavlink1: bool = False) -> None:
+        """
+        Correlated nine-axis sample or explicit failure. Acquisition owner is
+        Pi 1; sensor Pico may validate and forward it without claiming
+        acquisition. time_boot_ms is acquisition time relative to
+        acquisition_boot_id. Invalid fields are zero and must not be
+        used. Unsigned frame is at most 63 bytes.
+
+        ground_session            : Request session. (type:uint32_t)
+        request_id                : Request identifier. (type:uint32_t)
+        time_boot_ms              : Acquisition owner's monotonic boot-relative acquisition timestamp. [ms] (type:uint32_t)
+        sample_seq                : Acquisition owner's sample sequence, increments only on new successful reads. (type:uint32_t)
+        acquisition_boot_id        : Pi boot identity at acquisition. (type:uint32_t)
+        source_boot_id            : Reporting node boot identity. (type:uint32_t)
+        sample_age_ms             : Sample age at emission, saturated at 65535. [ms] (type:uint16_t)
+        valid_fields              : Measured field bits: accel 1, gyro 2, magnetometer 4. Temperature is not included. (type:uint16_t, values:SENSOR_VALID_FIELDS)
+        xacc                      : X acceleration, milligravity. [mG] (type:int16_t)
+        yacc                      : Y acceleration. [mG] (type:int16_t)
+        zacc                      : Z acceleration. [mG] (type:int16_t)
+        xgyro                     : X angular rate. [mrad/s] (type:int16_t)
+        ygyro                     : Y angular rate. [mrad/s] (type:int16_t)
+        zgyro                     : Z angular rate. [mrad/s] (type:int16_t)
+        xmag                      : X magnetic field. [mgauss] (type:int16_t)
+        ymag                      : Y magnetic field. [mgauss] (type:int16_t)
+        zmag                      : Z magnetic field. [mgauss] (type:int16_t)
+        status                    : Result; non-OK samples have valid_fields zero. (type:uint8_t, values:IMU_STATUS)
+        path                      : Response path. (type:uint8_t, values:IMU_PATH)
+        acquisition_component        : Pi component 1. (type:uint8_t)
+        target_system             : Recipient system. (type:uint8_t)
+        target_component          : Recipient component. (type:uint8_t)
+
+        """
+        self.send(self.imu_sample_encode(ground_session, request_id, time_boot_ms, sample_seq, acquisition_boot_id, source_boot_id, sample_age_ms, valid_fields, xacc, yacc, zacc, xgyro, ygyro, zgyro, xmag, ymag, zmag, status, path, acquisition_component, target_system, target_component), force_mavlink1=force_mavlink1)
 
     def heartbeat_encode(self, type: int, autopilot: int, base_mode: int, custom_mode: int, system_status: int, mavlink_version: int = 3) -> MAVLink_heartbeat_message:
         """
