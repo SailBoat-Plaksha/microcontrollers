@@ -12,6 +12,11 @@ comms_component = 158
 poll_interval_ms = 20
 queue_limit = 128
 
+[service]
+# The normal serve/SSH path keeps the comms Pico enabled. Direct radio mode
+# forces this false so it never polls or writes I2C address 0x09.
+comms_enabled = true
+
 # Generic six-axis register layout example. Supply the actual IMU address,
 # starting register and scale factors from its datasheet before live use.
 # Values below are illustrative and are not a selected hardware driver.
