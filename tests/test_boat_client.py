@@ -98,7 +98,7 @@ class BoatClientTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in sent], ["ACTUATOR_REQUEST", "IMU_REQUEST", "IMU_REQUEST"])
         self.assertEqual(sent[1]["fields"], dict(ground_session=direct.ground_session,
             request_id=1, timeout_ms=1000, max_age_ms=0, path=0,
-            target_system=255, target_component=190))
+            target_system=1, target_component=1))
         self.assertEqual((sent[2]["fields"]["path"], sent[2]["fields"]["max_age_ms"]), (1, 250))
 
     def test_imu_reply_validates_route_boot_target_and_deduplicates(self):
@@ -155,6 +155,17 @@ class BoatClientTests(unittest.TestCase):
         reading = [event for event in self.events if isinstance(event, ImuReading)][0]
         self.assertEqual((reading.request_id, reading.accel_mg), (ticket.request_id, (10, 0, 0)))
         self.assertNotIn((ticket.ground_session, ticket.request_id), self.client._pending_imu)
+
+    def test_pi_can_report_board_unavailable_but_cannot_claim_board_success(self):
+        ticket = self.client.request_imu("board")
+        self.imu_reply(ticket, path=1, source=(1, 1))
+        self.assertFalse(any(isinstance(event, ImuReading) for event in self.events))
+        self.imu_reply(ticket, path=1, source=(1, 1), status=3, valid_fields=0,
+            xacc=0, yacc=0, zacc=0, xgyro=0, ygyro=0, zgyro=0,
+            xmag=0, ymag=0, zmag=0)
+        readings = [event for event in self.events if isinstance(event, ImuReading)]
+        self.assertEqual(len(readings), 1)
+        self.assertEqual((readings[0].status, readings[0].source), (3, (1, 1)))
 
     def test_imu_transport_send_failure_emits_invalid_result(self):
         self.transport.send_error = OSError("radio down")

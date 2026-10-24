@@ -353,9 +353,9 @@ def build_ui(ui):
                         if node else "No heartbeat/status")
                 if STATE.imu_reading:
                     at, sample = STATE.imu_reading
-                    valid = sample.valid_fields
+                    age = sample.sample_age_ms + max(0, int((now - at) * 1000))
+                    valid = sample.valid_fields if age <= 5000 else 0
                     status = BoatClient._IMU_STATUS_NAMES.get(sample.status, "INVALID")
-                    age = sample.sample_age_ms
                     axes = (
                         "accel mg: " + (", ".join(map(str, sample.accel_mg)) if valid & 1 else "invalid, invalid, invalid"),
                         "gyro mrad/s: " + (", ".join(map(str, sample.gyro_mrad_s)) if valid & 2 else "invalid, invalid, invalid"),
@@ -367,6 +367,7 @@ def build_ui(ui):
                         f"acquisition owner Pi {1}/{sample.acquisition_component} · "
                         f"sample age {age} ms · valid mask 0x{valid:04x}\n" + "\n".join(axes)
                         + ("\nSIMULATED GENERATED READING" if simulation else "")
+                        + ("\nSTALE READING" if age > 5000 else "")
                         + ("\nRequest timed out" if sample.status == 4 else ""))
                 elif STATE.imu:
                     at, sample = STATE.imu[-1]

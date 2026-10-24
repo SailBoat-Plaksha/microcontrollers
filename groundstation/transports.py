@@ -297,6 +297,8 @@ class SimulationTransport:
                 daemon=True, name="groundstation-simulation-command").start()
         elif name == "IMU_REQUEST":
             f = msg["fields"]
+            if (f["target_system"], f["target_component"]) != (1, 1):
+                return
             with self._lock:
                 self._sample_seq = (self._sample_seq + 1) & 0xffffffff
                 sample_seq = self._sample_seq
@@ -311,8 +313,8 @@ class SimulationTransport:
                 "xgyro": 2, "ygyro": 0, "zgyro": -1,
                 "xmag": 31, "ymag": -24, "zmag": 8,
                 "status": 1, "path": f["path"], "acquisition_component": 1,
-                "target_system": f["target_system"],
-                "target_component": f["target_component"]},
+                "target_system": msg["system"],
+                "target_component": msg["component"]},
                 component=159 if board_path else 1)
 
     def _complete_request(self, actuator, op, counter, session, req, system, component, generation):

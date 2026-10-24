@@ -296,7 +296,7 @@ class BoatClient:
             self._send("IMU_REQUEST", {"ground_session": ticket.ground_session,
                 "request_id": request_id, "timeout_ms": timeout_ms,
                 "max_age_ms": max_age_ms, "path": path_id,
-                "target_system": self.system, "target_component": self.component})
+                "target_system": SYSTEM_BOAT, "target_component": COMPONENT_PI})
             return ticket
 
     def poll_imu_requests(self) -> None:
@@ -506,7 +506,9 @@ class BoatClient:
             return
         _ticket, expected_path, deadline = pending
         expected_source = self._IMU_ALLOWED_SOURCES[expected_path]
-        if (now > deadline or source != expected_source or
+        broker_failure = (expected_path == 1 and source == (SYSTEM_BOAT, COMPONENT_PI)
+                          and fields["status"] in (2, 3, 4, 5))
+        if (now > deadline or (source != expected_source and not broker_failure) or
                 fields["path"] != expected_path or
                 fields["target_system"] != self.system or
                 fields["target_component"] != self.component or
@@ -525,7 +527,7 @@ class BoatClient:
         known_pi_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_PI))
         known_source_boot = self._boot_ids.get(source)
         if (fields["acquisition_boot_id"] == 0 or fields["source_boot_id"] == 0 or
-                (expected_path == 0 and
+                (source == (SYSTEM_BOAT, COMPONENT_PI) and
                  fields["source_boot_id"] != fields["acquisition_boot_id"]) or
                 (known_pi_boot is not None and fields["acquisition_boot_id"] != known_pi_boot) or
                 (known_source_boot is not None and fields["source_boot_id"] != known_source_boot)):
