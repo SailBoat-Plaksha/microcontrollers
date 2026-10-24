@@ -2,10 +2,17 @@ import unittest
 from unittest.mock import patch
 
 from groundstation import cli
-from groundstation.cli import parse_step
+from groundstation.cli import parse_imu, parse_step
 
 
 class CliTests(unittest.TestCase):
+    def test_imu_command_defaults_and_selects_only_supported_paths(self):
+        self.assertEqual(parse_imu(["imu"]), "direct")
+        self.assertEqual(parse_imu(["IMU", "BOARD"]), "board")
+        for parts in (["imu", "radio"], ["imu", "direct", "extra"], ["read"]):
+            with self.subTest(parts=parts), self.assertRaises(ValueError):
+                parse_imu(parts)
+
     def test_step_accepts_documented_signed_forms_and_defaults_to_sail(self):
         self.assertEqual(parse_step(["step"], 5.0), (5.0, 1))
         self.assertEqual(parse_step(["step", "-5"], 5.0), (-5.0, 1))

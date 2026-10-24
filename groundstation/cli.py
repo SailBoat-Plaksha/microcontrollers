@@ -5,7 +5,7 @@ import argparse
 import threading
 import time
 
-from boat.client import BoatClient, MotorReport, NodeHealthReport, RequestOutcome
+from boat.client import BoatClient, ImuReading, MotorReport, NodeHealthReport, RequestOutcome
 from boat.radio import LoRaModemTransport
 from .transports import SerialTransport, SimulationTransport, SSHTransport
 
@@ -21,6 +21,16 @@ def parse_step(parts, default_step):
     if actuator not in (1, 2):
         raise ValueError("actuator must be sail (1) or rudder (2)")
     return delta, actuator
+
+
+def parse_imu(parts):
+    """Parse ``imu [direct|board]`` with direct acquisition as the default."""
+    if len(parts) not in (1, 2) or parts[0].lower() != "imu":
+        raise ValueError("use imu [direct|board]")
+    path = parts[1].lower() if len(parts) == 2 else "direct"
+    if path not in ("direct", "board"):
+        raise ValueError("IMU path must be direct or board")
+    return path
 
 
 def build_parser():
@@ -60,6 +70,7 @@ def main():
     event_lock = threading.Lock()
     safety = {"health": None, "motors": {}, "last_motor": {}, "last_health": 0.0,
               "busy": False, "uncertain": True}
+    imu_status = {1: "OK", 2: "NOT_READY", 3: "UNAVAILABLE", 4: "TIMEOUT", 5: "REJECTED"}
 
     def on_event(event):
         with event_lock:
@@ -85,8 +96,29 @@ def main():
                 elif event.state in (4, 5, 6):
                     safety["busy"] = any(item.result == 1 or bool(item.enabled)
                                           for item in safety["motors"].values())
+            elif isinstance(event, ImuReading):
+                print(f"IMU request {event.request_id}: {imu_status.get(event.status, 'INVALID')} "
+                      f"({event.status}), source {event.source[0]}/{event.source[1]}, "
+                      f"acquisition owner Pi {event.acquisition_component}, age {event.sample_age_ms} ms, "
+                      f"valid mask 0x{event.valid_fields:04x}")
+                print("  accel mg: " + (", ".join(map(str, event.accel_mg)) if event.valid_fields & 1 else "invalid"))
+                print("  gyro mrad/s: " + (", ".join(map(str, event.gyro_mrad_s)) if event.valid_fields & 2 else "invalid"))
+                print("  mag mgauss: " + (", ".join(map(str, event.mag_mgauss)) if event.valid_fields & 4 else "invalid"))
+                if args.simulate:
+                    print("  SIMULATED GENERATED READING")
 
     client.subscribe(on_event)
+    poll_stop = threading.Event()
+
+    def poll_imu_deadlines():
+        while not poll_stop.wait(0.05):
+            try:
+                client.poll_imu_requests()
+            except RuntimeError:
+                return
+
+    poll_thread = threading.Thread(target=poll_imu_deadlines, daemon=True,
+                                   name="groundstation-cli-imu-deadlines")
 
     def require_movement_ready(actuator):
         with event_lock:
@@ -101,12 +133,13 @@ def main():
     try:
         client.connect()
         client.ping_all()
+        poll_thread.start()
         print(f"Connected: {transport.name}")
         if args.simulate:
             print("SIMULATION MODE: all sensor and motor values are generated")
         elif args.lora:
             print("Direct RYLR998 mode: +OK confirms modem acceptance; motor outcomes come from Pi/MAVLink.")
-        print("Commands: absolute <degrees> [actuator 1|2], step [degrees [actuator 1|2]], stop [actuator 1|2], ping, status, modem, quit")
+        print("Commands: absolute <degrees> [actuator 1|2], step [degrees [actuator 1|2]], stop [actuator 1|2], imu [direct|board], ping, status, modem, quit")
         while True:
             try:
                 line = input("boat> ").strip()
@@ -121,6 +154,10 @@ def main():
             try:
                 if cmd == "ping":
                     client.ping_all()
+                elif cmd == "imu" and len(parts) in (1, 2):
+                    path = parse_imu(parts)
+                    ticket = client.request_imu(path)
+                    print(f"IMU request sent: id={ticket.request_id} session={ticket.ground_session} path={path}")
                 elif cmd == "modem":
                     check_health = getattr(transport, "check_health", None)
                     if not callable(check_health):
@@ -166,6 +203,9 @@ def main():
                         safety["uncertain"] = True
                 print(f"Command failed: {exc}")
     finally:
+        poll_stop.set()
+        if poll_thread.is_alive():
+            poll_thread.join(timeout=0.5)
         try:
             client.disconnect()
         except Exception as exc:

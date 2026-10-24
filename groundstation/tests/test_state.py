@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from boat.client import (Heartbeat, MotorReport, NodeHealthReport, RawFrameEvent,
+from boat.client import (Heartbeat, ImuReading, MotorReport, NodeHealthReport, RawFrameEvent,
                          RequestOutcome, TransportEvent)
 from groundstation.state import GroundStationState
 from groundstation.transports import SimulationTransport
@@ -81,6 +81,17 @@ class StateTests(unittest.TestCase):
         self.state.enqueue(result)
         self.state.drain()
         self.assertIn(result, self.state.outcomes)
+
+    def test_on_demand_imu_state_replaces_valid_sample_with_invalid_error(self):
+        valid = ImuReading(9, 1, 20, 2, 3, 4, 5, 7, (1, 2, 3), (4, 5, 6),
+                           (7, 8, 9), 1, 0, 1, 255, 190, (1, 1))
+        invalid = ImuReading(9, 2, 0, 0, 0, 0, 65535, 0, (0, 0, 0),
+                             (0, 0, 0), (0, 0, 0), 4, 1, 1, 255, 190, (1, 159))
+        self.state._apply(time.monotonic(), valid)
+        self.assertEqual(self.state.imu_reading[1].valid_fields, 7)
+        self.state._apply(time.monotonic(), invalid)
+        self.assertEqual(self.state.imu_reading[1].status, 4)
+        self.assertEqual(self.state.imu_reading[1].valid_fields, 0)
 
 
 if __name__ == "__main__":

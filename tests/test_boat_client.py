@@ -2,7 +2,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from boat.client import (BoatClient, Heartbeat, ImuSample, MotorReport,
+from boat.client import (BoatClient, Heartbeat, ImuReading, ImuSample, MotorReport,
                          NodeHealthReport, PongReply, RequestOutcome,
                          TransportEvent)
 from protocol import codec
@@ -76,6 +76,110 @@ class BoatClientTests(unittest.TestCase):
         self.assertEqual([m["fields"]["delta_cdeg"] for m in decoded], [9000, -500, 0])
         self.assertEqual([m["fields"]["request_id"] for m in decoded], [1, 2, 3])
         self.assertEqual(decoded[0]["fields"]["timeout_ms"], 500)
+
+    def imu_reply(self, ticket, *, path=0, source=(1, 1), status=1, valid_fields=7,
+                  **overrides):
+        fields = dict(ground_session=ticket.ground_session, request_id=ticket.request_id,
+            time_boot_ms=321, sample_seq=8, acquisition_boot_id=44,
+            source_boot_id=44 if source == (1, 1) else 159, sample_age_ms=12,
+            valid_fields=valid_fields, xacc=1, yacc=2, zacc=3,
+            xgyro=4, ygyro=5, zgyro=6, xmag=7, ymag=8, zmag=9,
+            status=status, path=path, acquisition_component=1,
+            target_system=255, target_component=190)
+        fields.update(overrides)
+        self.transport.receive("IMU_SAMPLE", fields, system=source[0], component=source[1])
+
+    def test_imu_request_has_independent_ids_wire_fields_and_no_motor_gate(self):
+        motor_ticket = self.client.stop(1)
+        direct = self.client.request_imu()
+        board = self.client.request_imu("board", timeout_ms=2000, max_age_ms=250)
+        self.assertEqual((motor_ticket.request_id, direct.request_id, board.request_id), (1, 1, 2))
+        sent = [codec.decode(frame) for frame in self.transport.frames]
+        self.assertEqual([item["name"] for item in sent], ["ACTUATOR_REQUEST", "IMU_REQUEST", "IMU_REQUEST"])
+        self.assertEqual(sent[1]["fields"], dict(ground_session=direct.ground_session,
+            request_id=1, timeout_ms=1000, max_age_ms=0, path=0,
+            target_system=255, target_component=190))
+        self.assertEqual((sent[2]["fields"]["path"], sent[2]["fields"]["max_age_ms"]), (1, 250))
+
+    def test_imu_reply_validates_route_boot_target_and_deduplicates(self):
+        self.transport.receive("NODE_HEALTH", dict(boot_id=44, time_boot_ms=1,
+            fault_flags=0, sensor_valid_fields=0, queue_drops=0, reset_reason=0,
+            feedback_valid=0), system=1, component=1)
+        ticket = self.client.request_imu("board")
+        self.imu_reply(ticket, path=0, source=(1, 1))
+        self.imu_reply(ticket, path=1, source=(1, 159), target_component=1)
+        self.imu_reply(ticket, path=1, source=(1, 159), acquisition_boot_id=99)
+        self.assertFalse(any(isinstance(event, ImuReading) for event in self.events))
+        self.imu_reply(ticket, path=1, source=(1, 159))
+        self.imu_reply(ticket, path=1, source=(1, 159))
+        readings = [event for event in self.events if isinstance(event, ImuReading)]
+        self.assertEqual(len(readings), 1)
+        reading = readings[0]
+        self.assertEqual(reading.accel_mg, (1, 2, 3))
+        self.assertEqual(reading.gyro_mrad_s, (4, 5, 6))
+        self.assertEqual(reading.mag_mgauss, (7, 8, 9))
+        self.assertEqual((reading.source, reading.path, reading.valid_fields), ((1, 159), 1, 7))
+
+    def test_imu_error_and_deadline_publish_invalid_reading(self):
+        error_ticket = self.client.request_imu()
+        self.imu_reply(error_ticket, status=3, valid_fields=0, xacc=0, yacc=0, zacc=0,
+                       xgyro=0, ygyro=0, zgyro=0, xmag=0, ymag=0, zmag=0)
+        error = [event for event in self.events if isinstance(event, ImuReading)][-1]
+        self.assertEqual((error.status, error.valid_fields), (3, 0))
+        pending = self.client.request_imu(timeout_ms=25)
+        self.now += 0.026
+        self.client.poll_imu_requests()
+        timeout = [event for event in self.events if isinstance(event, ImuReading)][-1]
+        self.assertEqual((timeout.request_id, timeout.status, timeout.valid_fields),
+                         (pending.request_id, 4, 0))
+        self.imu_reply(pending)
+        self.assertEqual(len([event for event in self.events if isinstance(event, ImuReading)]), 2)
+
+    def test_imu_synchronous_reply_is_correlated_before_send_returns(self):
+        def respond(frame):
+            message = codec.decode(frame)
+            if message["name"] != "IMU_REQUEST":
+                return
+            f = message["fields"]
+            self.transport.receive("IMU_SAMPLE", dict(
+                ground_session=f["ground_session"], request_id=f["request_id"],
+                time_boot_ms=1, sample_seq=1, acquisition_boot_id=44,
+                source_boot_id=44, sample_age_ms=0, valid_fields=1,
+                xacc=10, yacc=0, zacc=0, xgyro=0, ygyro=0, zgyro=0,
+                xmag=0, ymag=0, zmag=0, status=1, path=f["path"],
+                acquisition_component=1, target_system=255, target_component=190),
+                system=1, component=1)
+
+        self.transport.on_send = respond
+        ticket = self.client.request_imu()
+        reading = [event for event in self.events if isinstance(event, ImuReading)][0]
+        self.assertEqual((reading.request_id, reading.accel_mg), (ticket.request_id, (10, 0, 0)))
+        self.assertNotIn((ticket.ground_session, ticket.request_id), self.client._pending_imu)
+
+    def test_imu_transport_send_failure_emits_invalid_result(self):
+        self.transport.send_error = OSError("radio down")
+        with self.assertRaisesRegex(OSError, "radio down"):
+            self.client.request_imu("board")
+        failure = [event for event in self.events if isinstance(event, ImuReading)][-1]
+        self.assertEqual((failure.status, failure.path, failure.valid_fields), (3, 1, 0))
+        self.assertIsNone(self.client._session)
+
+    def test_imu_pending_is_failed_on_disconnect_and_old_callback_cannot_complete_new_session(self):
+        first = self.client.request_imu("board")
+        old_callback = self.transport.callback
+        self.client.disconnect()
+        failed = [event for event in self.events if isinstance(event, ImuReading)][-1]
+        self.assertEqual((failed.request_id, failed.status, failed.valid_fields),
+                         (first.request_id, 3, 0))
+        self.client.connect()
+        second = self.client.request_imu("board")
+        fields = dict(ground_session=first.ground_session, request_id=first.request_id,
+            time_boot_ms=1, sample_seq=1, acquisition_boot_id=44, source_boot_id=159,
+            sample_age_ms=0, valid_fields=7, xacc=1, yacc=2, zacc=3,
+            xgyro=4, ygyro=5, zgyro=6, xmag=7, ymag=8, zmag=9, status=1,
+            path=1, acquisition_component=1, target_system=255, target_component=190)
+        old_callback(codec.encode("IMU_SAMPLE", fields, system=1, component=159))
+        self.assertIn((second.ground_session, second.request_id), self.client._pending_imu)
 
     def test_session_changes_on_reconnect_and_requires_connected_state(self):
         with patch("boat.client.secrets.randbits", side_effect=[0x1234, 0x5678]):

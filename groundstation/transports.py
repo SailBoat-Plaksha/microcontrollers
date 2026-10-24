@@ -206,6 +206,7 @@ class SimulationTransport:
         self._angles = {1: 0, 2: 0}
         self._enabled = {1: False, 2: False}
         self._counter = 0
+        self._sample_seq = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._worker = None
@@ -294,6 +295,25 @@ class SimulationTransport:
                 args=(actuator, op, counter, session, req, msg["system"],
                       msg["component"], generation),
                 daemon=True, name="groundstation-simulation-command").start()
+        elif name == "IMU_REQUEST":
+            f = msg["fields"]
+            with self._lock:
+                self._sample_seq = (self._sample_seq + 1) & 0xffffffff
+                sample_seq = self._sample_seq
+            board_path = f["path"] == 1
+            self._emit("IMU_SAMPLE", {"ground_session": f["ground_session"],
+                "request_id": f["request_id"],
+                "time_boot_ms": int(time.monotonic() * 1000) & 0xffffffff,
+                "sample_seq": sample_seq, "acquisition_boot_id": 1,
+                "source_boot_id": 159 if board_path else 1,
+                "sample_age_ms": 0, "valid_fields": 7,
+                "xacc": 12, "yacc": -8, "zacc": 1000,
+                "xgyro": 2, "ygyro": 0, "zgyro": -1,
+                "xmag": 31, "ymag": -24, "zmag": 8,
+                "status": 1, "path": f["path"], "acquisition_component": 1,
+                "target_system": f["target_system"],
+                "target_component": f["target_component"]},
+                component=159 if board_path else 1)
 
     def _complete_request(self, actuator, op, counter, session, req, system, component, generation):
         time.sleep(max(0.02, self.response_delay))

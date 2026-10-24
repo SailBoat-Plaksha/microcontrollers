@@ -96,6 +96,29 @@ class ImuSample:
 
 
 @dataclass(frozen=True)
+class ImuReading:
+    """Correlated nine-axis IMU reply, including explicit invalid/error state."""
+
+    ground_session: int
+    request_id: int
+    time_boot_ms: int
+    sample_seq: int
+    acquisition_boot_id: int
+    source_boot_id: int
+    sample_age_ms: int
+    valid_fields: int
+    accel_mg: tuple[int, int, int]
+    gyro_mrad_s: tuple[int, int, int]
+    mag_mgauss: tuple[int, int, int]
+    status: int
+    path: int
+    acquisition_component: int
+    target_system: int
+    target_component: int
+    source: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class RawFrameEvent:
     bytes: bytes
     transport: str
@@ -123,6 +146,11 @@ class BoatClient:
     _DEFAULT_MOTOR_FRESHNESS_S = 2.0
     _ALLOWED_RESULT_SOURCES = frozenset(((SYSTEM_BOAT, COMPONENT_PI),
                                          (SYSTEM_BOAT, COMPONENT_MOTOR)))
+    _IMU_STATUS_NAMES = {1: "OK", 2: "NOT_READY", 3: "UNAVAILABLE",
+                         4: "TIMEOUT", 5: "REJECTED"}
+    _IMU_PATHS = {"direct": 0, "board": 1}
+    _IMU_ALLOWED_SOURCES = {0: (SYSTEM_BOAT, COMPONENT_PI),
+                            1: (SYSTEM_BOAT, 159)}
 
     def __init__(self, transport: Transport, *, system: int = SYSTEM_GROUND,
                  component: int = COMPONENT_GROUND,
@@ -143,6 +171,7 @@ class BoatClient:
         self._opening_generation: int | None = None
         self._opening_frames: list[bytes] = []
         self._next_request_id = 1
+        self._next_imu_request_id = 1
         self._frame_sequence = 0
         self._next_ping_seq = 0
         self._subscribers: list[Callable[[object], None]] = []
@@ -159,6 +188,8 @@ class BoatClient:
         self._seen_pongs: dict[tuple[int, int, int, int], float] = {}
         self._pending_tickets: dict[tuple[int, int], RequestTicket] = {}
         self._pending_at: dict[tuple[int, int], float] = {}
+        self._pending_imu: dict[tuple[int, int], tuple[RequestTicket, int, float]] = {}
+        self._seen_imu: dict[tuple[int, ...], float] = {}
         self._seen_outcomes: dict[tuple[int, int, int, int, int, int, int], float] = {}
         self._reconcile_health = False
         self._reconcile_status = False
@@ -195,6 +226,7 @@ class BoatClient:
             self._opening_generation = None
             self._session = new_session
             self._next_request_id = 1
+            self._next_imu_request_id = 1
             self._next_ping_seq = 0
             self._publish(TransportEvent("connected", self.transport.name))
             if self._session != new_session:
@@ -234,6 +266,44 @@ class BoatClient:
 
     def stop(self, actuator: int) -> RequestTicket:
         return self._movement(actuator, 3, 0, 0, 0)
+
+    def request_imu(self, path: str = "direct", *, timeout_ms: int = 1000,
+                    max_age_ms: int = 0) -> RequestTicket:
+        """Request one IMU sample without requiring motor readiness."""
+        with self._state_lock:
+            self._require_connected()
+            if path not in self._IMU_PATHS:
+                raise ValueError("path must be 'direct' or 'board'")
+            self._uint(timeout_ms, 16, "timeout_ms")
+            if not 1 <= timeout_ms <= 5000:
+                raise ValueError("timeout_ms must be between 1 and 5000")
+            self._uint(max_age_ms, 16, "max_age_ms")
+            now = self._clock()
+            session = self.ground_session
+            self._prune(now)
+            if self._session != session:
+                raise RuntimeError("client session changed while expiring IMU requests")
+            if len(self._pending_imu) >= self._MAX_PENDING:
+                raise RuntimeError("too many unresolved IMU requests")
+            if self._next_imu_request_id > 0xFFFFFFFF:
+                raise OverflowError("IMU request_id space exhausted for this session")
+            request_id = self._next_imu_request_id
+            self._next_imu_request_id += 1
+            ticket = RequestTicket(request_id, session)
+            key = (ticket.ground_session, request_id)
+            path_id = self._IMU_PATHS[path]
+            self._pending_imu[key] = (ticket, path_id, now + timeout_ms / 1000.0)
+            self._send("IMU_REQUEST", {"ground_session": ticket.ground_session,
+                "request_id": request_id, "timeout_ms": timeout_ms,
+                "max_age_ms": max_age_ms, "path": path_id,
+                "target_system": self.system, "target_component": self.component})
+            return ticket
+
+    def poll_imu_requests(self) -> None:
+        """Expire IMU requests; call periodically from event-loop driven clients."""
+        with self._state_lock:
+            self._require_connected()
+            self._prune(self._clock())
 
     def ping_all(self) -> None:
         with self._state_lock:
@@ -425,6 +495,63 @@ class BoatClient:
                                     (fields["xacc"], fields["yacc"], fields["zacc"]),
                                     (fields["xgyro"], fields["ygyro"], fields["zgyro"]),
                                     self._sensor_valid_fields.get(source, 0), source))
+        elif name == "IMU_SAMPLE":
+            self._handle_imu_sample(fields, source, now)
+
+    def _handle_imu_sample(self, fields: dict[str, int], source: tuple[int, int],
+                           now: float) -> None:
+        key = (fields["ground_session"], fields["request_id"])
+        pending = self._pending_imu.get(key)
+        if pending is None:
+            return
+        _ticket, expected_path, deadline = pending
+        expected_source = self._IMU_ALLOWED_SOURCES[expected_path]
+        if (now > deadline or source != expected_source or
+                fields["path"] != expected_path or
+                fields["target_system"] != self.system or
+                fields["target_component"] != self.component or
+                fields["acquisition_component"] != COMPONENT_PI or
+                fields["status"] not in self._IMU_STATUS_NAMES or
+                fields["valid_fields"] & ~7 or
+                (fields["status"] != 1 and fields["valid_fields"] != 0)):
+            return
+        invalid_axes = (
+            (fields["valid_fields"] & 1, (fields["xacc"], fields["yacc"], fields["zacc"])),
+            (fields["valid_fields"] & 2, (fields["xgyro"], fields["ygyro"], fields["zgyro"])),
+            (fields["valid_fields"] & 4, (fields["xmag"], fields["ymag"], fields["zmag"])),
+        )
+        if any(not bit and any(values) for bit, values in invalid_axes):
+            return
+        known_pi_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_PI))
+        known_source_boot = self._boot_ids.get(source)
+        if (fields["acquisition_boot_id"] == 0 or fields["source_boot_id"] == 0 or
+                (expected_path == 0 and
+                 fields["source_boot_id"] != fields["acquisition_boot_id"]) or
+                (known_pi_boot is not None and fields["acquisition_boot_id"] != known_pi_boot) or
+                (known_source_boot is not None and fields["source_boot_id"] != known_source_boot)):
+            return
+        dedupe = (key[0], key[1], fields["acquisition_boot_id"],
+                  fields["source_boot_id"], fields["sample_seq"], expected_path,
+                  fields["status"])
+        if dedupe in self._seen_imu:
+            return
+        self._seen_imu[dedupe] = now
+        self._trim(self._seen_imu, self._MAX_SEEN)
+        self._pending_imu.pop(key, None)
+        reading = ImuReading(fields["ground_session"], fields["request_id"],
+            fields["time_boot_ms"], fields["sample_seq"], fields["acquisition_boot_id"],
+            fields["source_boot_id"], fields["sample_age_ms"], fields["valid_fields"],
+            (fields["xacc"], fields["yacc"], fields["zacc"]),
+            (fields["xgyro"], fields["ygyro"], fields["zgyro"]),
+            (fields["xmag"], fields["ymag"], fields["zmag"]), fields["status"],
+            fields["path"], fields["acquisition_component"], fields["target_system"],
+            fields["target_component"], source)
+        self._publish(reading)
+
+    def _publish_imu_failure(self, ticket: RequestTicket, path: int, status: int) -> None:
+        self._publish(ImuReading(ticket.ground_session, ticket.request_id, 0, 0, 0, 0,
+            0xFFFF, 0, (0, 0, 0), (0, 0, 0), (0, 0, 0), status, path,
+            COMPONENT_PI, self.system, self.component, self._IMU_ALLOWED_SOURCES[path]))
 
     def _handle_result(self, fields: dict[str, int], source: tuple[int, int], now: float) -> None:
         ticket_key = (fields["ground_session"], fields["request_id"])
@@ -475,6 +602,7 @@ class BoatClient:
                 self._publish(TransportEvent("reconciliation_required",
                                              f"boot changed for {source[0]}/{source[1]}"))
             self._invalidate_node_requests(source, old_boot, now)
+            self._invalidate_imu_requests(source)
             if self._session is None:
                 return
         self._boot_ids[source] = boot_id
@@ -504,6 +632,18 @@ class BoatClient:
             self._discard_ticket(ticket)
         self._seen_outcomes.clear()
 
+    def _invalidate_imu_requests(self, source: tuple[int, int]) -> None:
+        if source == (SYSTEM_BOAT, COMPONENT_PI):
+            matching = tuple(self._pending_imu.items())
+        elif source == self._IMU_ALLOWED_SOURCES[1]:
+            matching = tuple((key, value) for key, value in self._pending_imu.items()
+                             if value[1] == 1)
+        else:
+            return
+        for key, (ticket, path, _deadline) in matching:
+            self._pending_imu.pop(key, None)
+            self._publish_imu_failure(ticket, path, 3)
+
     def _publish_unknown(self, ticket: RequestTicket, boot_id: int | None = None,
                          source: tuple[int, int] | None = None) -> None:
         if boot_id is None:
@@ -527,6 +667,7 @@ class BoatClient:
     def _clear_connection_state(self, *, emit_unknown: bool,
                                 session: int | None = None) -> None:
         tickets = tuple(self._pending_tickets.values())
+        imu_tickets = tuple(self._pending_imu.values())
         motor_boot = self._boot_ids.get((SYSTEM_BOAT, COMPONENT_MOTOR), 0)
         self._last_seen.clear()
         self._sensor_valid_fields.clear()
@@ -545,10 +686,14 @@ class BoatClient:
         self._seen_outcomes.clear()
         self._pending_tickets.clear()
         self._pending_at.clear()
+        self._pending_imu.clear()
+        self._seen_imu.clear()
         if emit_unknown:
             for ticket in tickets:
                 if session is None or ticket.ground_session == session:
                     self._publish_unknown(ticket, motor_boot)
+        for ticket, path, _deadline in imu_tickets:
+            self._publish_imu_failure(ticket, path, 3)
 
     def _fail_transport(self, exc: Exception, *,
                         affected: tuple[RequestTicket, ...] = ()) -> None:
@@ -613,6 +758,13 @@ class BoatClient:
                 self._motor_busy = False
                 self._reconcile_status = False
                 self._reconciled = False
+        for key, (ticket, path, deadline) in tuple(self._pending_imu.items()):
+            if now >= deadline:
+                self._pending_imu.pop(key, None)
+                self._publish_imu_failure(ticket, path, 4)
+        for key, seen_at in tuple(self._seen_imu.items()):
+            if seen_at < cutoff:
+                self._seen_imu.pop(key, None)
         # Keep the Pi and motor boot identities while bounding incidental peers.
         self._trim_preserving(self._boot_ids, self._MAX_SEEN,
                               {(SYSTEM_BOAT, COMPONENT_PI),

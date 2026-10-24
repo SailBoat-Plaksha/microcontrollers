@@ -9,7 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from boat.client import (BoatClient, Heartbeat, ImuSample, MotorReport, NodeHealthReport,
+from boat.client import (BoatClient, Heartbeat, ImuReading, ImuSample, MotorReport, NodeHealthReport,
                          PongReply, RawFrameEvent, RequestOutcome, TransportEvent)
 from protocol import codec
 
@@ -34,6 +34,7 @@ class GroundStationState:
         self.nodes: dict[tuple[int, int], dict] = {}
         self.pings: dict[tuple[int, int], PongReply] = {}
         self.imu: deque[tuple[float, ImuSample]] = deque(maxlen=100)
+        self.imu_reading: tuple[float, ImuReading] | None = None
         self.trace: deque[dict] = deque(maxlen=1000)
         self.transport = None
         self.trace_drops = 0
@@ -102,6 +103,7 @@ class GroundStationState:
                 self.motor_reports.clear()
                 self.motor_report_at.clear()
                 self.motor_health = None
+                self.imu_reading = None
                 self.uncertain = True
         elif isinstance(event, TransportLog):
             self.detail = f"{event.transport} log: {event.message}"
@@ -150,6 +152,10 @@ class GroundStationState:
                                 for item in self.motor_reports.values())
         elif isinstance(event, ImuSample):
             self.imu.append((at, event))
+            node = self.nodes.setdefault(event.source, {})
+            node["seen"] = at
+        elif isinstance(event, ImuReading):
+            self.imu_reading = (at, event)
             node = self.nodes.setdefault(event.source, {})
             node["seen"] = at
         elif isinstance(event, RawFrameEvent):

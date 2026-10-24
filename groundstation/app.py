@@ -6,7 +6,7 @@ import json
 import queue
 import time
 
-from boat.client import BoatClient
+from boat.client import BoatClient, ImuReading
 from boat.radio import LoRaModemTransport
 from .state import STATE, TransportLog
 from .transports import SerialTransport, SimulationTransport, SSHTransport
@@ -92,6 +92,8 @@ def _connect(mode, port, baud, ssh_host, radio_settings=None):
             STATE.mode, STATE.detail = transport.name, "Opening transport…"
             STATE.uncertain, STATE.busy, STATE.feedback_valid = True, False, False
             STATE.motor_report = STATE.motor_health = None
+            STATE.imu_reading = None
+            STATE.imu.clear()
             STATE.nodes.clear()
             STATE.pings.clear()
         client.connect()
@@ -242,7 +244,12 @@ def build_ui(ui):
                             node_labels[key] = ui.label("No heartbeat/status").classes("whitespace-pre-wrap text-sm")
 
         with ui.card().classes("w-full"):
-            ui.label("IMU · Pi acquisition owner").classes("text-lg font-medium")
+            ui.label("On-demand IMU · Pi acquisition owner").classes("text-lg font-medium")
+            with ui.row().classes("w-full flex-wrap items-center gap-2"):
+                read_imu_btn = ui.button("Read IMU", color="primary")
+                read_board_imu_btn = ui.button("Read via Sensor Pico")
+                read_imu_btn.disable()
+                read_board_imu_btn.disable()
             imu_text = ui.label("No IMU sample received.").classes("text-sm")
             chart = ui.echart({"animation": False, "tooltip": {"trigger": "axis"},
                 "legend": {"data": ["accel x", "accel y", "accel z", "gyro x", "gyro y", "gyro z"]},
@@ -272,6 +279,13 @@ def build_ui(ui):
             STATE.drain()
             now = time.monotonic()
             with STATE.lock:
+                active_client = STATE.client
+            if active_client is not None:
+                try:
+                    active_client.poll_imu_requests()
+                except RuntimeError:
+                    pass
+            with STATE.lock:
                 connected = STATE.connected and bool(getattr(STATE.transport, "is_connected", True))
                 if STATE.connected and not connected:
                     STATE.connected = False
@@ -292,6 +306,8 @@ def build_ui(ui):
                 ping_btn.set_enabled(connected)
                 modem_health_btn.set_enabled(connected and callable(
                     getattr(STATE.transport, "check_health", None)))
+                read_imu_btn.set_enabled(connected)
+                read_board_imu_btn.set_enabled(connected)
                 stop_btn.set_enabled(connected)
                 for field in (mode, port, baud, host, local_address, peer_address,
                               network_id, band_hz, parameter):
@@ -335,7 +351,24 @@ def build_ui(ui):
                         f"RTT {'unknown' if ping is None else f'{ping:.1f} ms'}\n{h}\n{errors}")
                         + ("\nSTALE" if age > 5.0 else "")
                         if node else "No heartbeat/status")
-                if STATE.imu:
+                if STATE.imu_reading:
+                    at, sample = STATE.imu_reading
+                    valid = sample.valid_fields
+                    status = BoatClient._IMU_STATUS_NAMES.get(sample.status, "INVALID")
+                    age = sample.sample_age_ms
+                    axes = (
+                        "accel mg: " + (", ".join(map(str, sample.accel_mg)) if valid & 1 else "invalid, invalid, invalid"),
+                        "gyro mrad/s: " + (", ".join(map(str, sample.gyro_mrad_s)) if valid & 2 else "invalid, invalid, invalid"),
+                        "mag mgauss: " + (", ".join(map(str, sample.mag_mgauss)) if valid & 4 else "invalid, invalid, invalid"),
+                    )
+                    imu_text.set_text(
+                        f"Request {sample.request_id} · status {status} ({sample.status}) · "
+                        f"source {sample.source[0]}/{sample.source[1]} · "
+                        f"acquisition owner Pi {1}/{sample.acquisition_component} · "
+                        f"sample age {age} ms · valid mask 0x{valid:04x}\n" + "\n".join(axes)
+                        + ("\nSIMULATED GENERATED READING" if simulation else "")
+                        + ("\nRequest timed out" if sample.status == 4 else ""))
+                elif STATE.imu:
                     at, sample = STATE.imu[-1]
                     age = now - at
                     valid = sample.valid_fields
@@ -361,7 +394,8 @@ def build_ui(ui):
                         series["data"] = points
                     chart.update()
                 else:
-                    imu_text.set_text("No IMU sample received. Acceleration is mg; angular rate is mrad/s. Acquisition owner: Pi.")
+                    imu_text.set_text("No on-demand IMU reading. Units: accel mg, gyro mrad/s, magnetometer mgauss. Acquisition owner: Pi." +
+                                      (" · SIMULATION GENERATES ALL VALUES" if simulation else ""))
                 recent_trace = list(STATE.trace)[-30:]
                 trace_text.set_text((f"TRACE EVENTS DROPPED: {STATE.trace_drops}\n" if STATE.trace_drops else "") +
                                     "\n".join(json.dumps(item, default=str, separators=(",", ":"))
@@ -384,6 +418,8 @@ def build_ui(ui):
         disconnect_btn.on_click(lambda: _call_background(_disconnect))
         ping_btn.on_click(lambda: _call_background(_client_action, "ping_all"))
         modem_health_btn.on_click(lambda: _call_background(_check_modem_health))
+        read_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "direct"))
+        read_board_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "board"))
         absolute_btn.on_click(lambda: _call_background(_client_action, "set_absolute_angle",
                                                         int(actuator.value), round(float(absolute.value) * 100)))
         left_btn.on_click(lambda: _call_background(_client_action, "step", int(actuator.value),

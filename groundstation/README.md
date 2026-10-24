@@ -28,6 +28,8 @@ The SSH host field accepts an SSH config alias, not a shell command. The applica
 
 `groundstation.app.set_transport_factory(kind, factory)` replaces the `serial`, `direct_radio`, `ssh`, or `simulation` constructor before `build_ui` / `ui.run`. The existing `serial`, `ssh`, and `simulation` factories receive `(port_or_alias, baud)`; `direct_radio` also accepts the modem settings as keyword arguments. Each returns a `boat.client.Transport`. This is the seam for injecting a radio serial fake or onboard-router simulator while keeping traffic on the same `BoatClient` and `protocol.codec` path.
 
+On-demand IMU reads are independent of motor readiness. **Read IMU** sends a direct Pi sensor request; **Read via Sensor Pico** uses the Pi-polled 0x0A sensor board route. The Pi remains the only I2C controller. Each correlated reply shows request ID, status, reporting source, Pi acquisition owner, sample age, validity mask, and all nine axes in mg, mrad/s, and mgauss. Errors and timeouts clear the displayed validity mask. Simulation generates and labels replies for both paths.
+
 Movement buttons stay disabled until the connected transport has reported recent status for the selected actuator and a motor health record with valid feedback. Actuator IDs are sail `1` and rudder `2`. The visible range for absolute/step input is the signed `int16` centidegree wire range; it is not a claim about installed hardware travel. A transport reconnect creates a new client session and does not resend movement. An uncertain request needs fresh motor status before new movement is enabled. STOP is a separate opcode with zero delta.
 
 ## CLI
@@ -42,7 +44,7 @@ python3 -m groundstation.cli --serial /dev/ttyACM0 --baud 115200  # optional raw
 python3 -m groundstation.cli --ssh boat-pi
 ```
 
-Commands are `absolute <degrees> [actuator 1|2]`, `step [degrees [actuator 1|2]]`, `stop [actuator 1|2]`, `ping`, `status`, and `quit`. A bare `step` uses `--step-deg` (default 5); `step -5` sends a negative five degree step. The CLI exposes the same `BoatClient` methods as the GUI. It records events and reports command ticket IDs; transport reality and feedback validity remain protocol observations.
+Commands are `absolute <degrees> [actuator 1|2]`, `step [degrees [actuator 1|2]]`, `stop [actuator 1|2]`, `imu [direct|board]`, `ping`, `status`, and `quit`. `imu` defaults to the direct Pi route; `imu board` routes through the sensor Pico. The CLI reports each result, including explicit errors and timeouts. A bare `step` uses `--step-deg` (default 5); `step -5` sends a negative five degree step. The CLI exposes the same `BoatClient` methods as the GUI. It records events and reports command ticket IDs; transport reality and feedback validity remain protocol observations.
 
 ## Headless checks
 
