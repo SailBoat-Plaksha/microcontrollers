@@ -123,6 +123,33 @@ def _disconnect():
                     STATE.enqueue(exc)
 
 
+def _check_modem_health():
+    with STATE.lock:
+        transport = STATE.transport
+        connected = STATE.connected
+    if not connected or transport is None or not callable(getattr(transport, "check_health", None)):
+        raise RuntimeError("Connect the direct USB-UART LoRa modem before checking modem health.")
+    try:
+        report = transport.check_health()
+    except Exception as exc:
+        with STATE.lock:
+            STATE.detail = f"LoRa modem health check failed: {type(exc).__name__}: {exc}"
+            if not getattr(transport, "is_connected", True):
+                STATE.uncertain = True
+        return {"healthy": False, "error": f"{type(exc).__name__}: {exc}"}
+    responses = report["responses"]
+    summary = (f"LoRa modem health {'OK' if report['healthy'] else 'CHECK FAILED'} · "
+               f"address {responses.get('address', '?')} · "
+               f"network {responses.get('network_id', '?')} · "
+               f"band {responses.get('band_hz', '?')} Hz · "
+               f"parameters {responses.get('parameter', '?')} · "
+               f"{responses.get('version', '?')} · UID {responses.get('uid', '?')}")
+    with STATE.lock:
+        STATE.detail = summary
+    STATE.enqueue(TransportLog(transport.name, summary))
+    return report
+
+
 def _client_action(method, *args):
     with _ACTION_LOCK:
         with STATE.lock:
@@ -171,8 +198,10 @@ def build_ui(ui):
                 connect_btn = ui.button("Connect", color="primary")
                 disconnect_btn = ui.button("Disconnect", color="secondary")
                 ping_btn = ui.button("Ping all nodes")
+                modem_health_btn = ui.button("Check LoRa modem AT health")
                 disconnect_btn.disable()
                 ping_btn.disable()
+                modem_health_btn.disable()
             ui.label("SSH uses ~/.ssh/config, strict host key checking, and python3 -m onboard bridge --config /etc/arsem/onboard.toml.").classes("text-xs text-slate-600")
             with ui.expansion("Direct radio settings", icon="settings"):
                 ui.label("Configure both modems to the same network, frequency, and parameters. Blank frequency leaves the modem's current band unchanged.").classes("text-xs text-slate-600")
@@ -261,6 +290,8 @@ def build_ui(ui):
                 connect_btn.set_enabled(not connected)
                 disconnect_btn.set_enabled(connected)
                 ping_btn.set_enabled(connected)
+                modem_health_btn.set_enabled(connected and callable(
+                    getattr(STATE.transport, "check_health", None)))
                 stop_btn.set_enabled(connected)
                 for field in (mode, port, baud, host, local_address, peer_address,
                               network_id, band_hz, parameter):
@@ -352,6 +383,7 @@ def build_ui(ui):
         connect_btn.on_click(connect_selected)
         disconnect_btn.on_click(lambda: _call_background(_disconnect))
         ping_btn.on_click(lambda: _call_background(_client_action, "ping_all"))
+        modem_health_btn.on_click(lambda: _call_background(_check_modem_health))
         absolute_btn.on_click(lambda: _call_background(_client_action, "set_absolute_angle",
                                                         int(actuator.value), round(float(absolute.value) * 100)))
         left_btn.on_click(lambda: _call_background(_client_action, "step", int(actuator.value),

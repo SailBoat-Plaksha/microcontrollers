@@ -10,7 +10,7 @@ from protocol import codec
 
 class FakeSerial:
     def __init__(self, *args, ack=True, partial=0, fail_write_after=None,
-                 fail_prefix=None, **kwargs):
+                 fail_prefix=None, health_override=None, **kwargs):
         self.args, self.kwargs = args, kwargs
         self.ack, self.partial, self.fail_write_after = ack, partial, fail_write_after
         self.fail_prefix = fail_prefix
@@ -25,6 +25,10 @@ class FakeSerial:
         self.before_ack = None
         self.flush_error = None
         self.write_result = "normal"
+        self.health_override = health_override or {}
+        self.commands = []
+        self.settings = {"address": "0", "network": "18", "band": "915000000",
+                         "parameter": "10,7,1,12"}
 
     def read(self, count):
         with self.cv:
@@ -50,15 +54,37 @@ class FakeSerial:
                 completed, rest = self.wire.split(b"\n", 1)
                 self.wire = bytearray(rest)
                 if self.ack:
+                    command = bytes(completed).rstrip(b"\r")
+                    self.commands.append(command)
                     if self.before_ack and completed.startswith(b"AT+SEND="):
                         self.inject(self.before_ack + b"+OK\r\n")
                     elif self.hold_acks:
                         self.pending_acks += 1
                     else:
-                        self.inject(b"+OK\r\n")
+                        self.inject(self._response(command) + b"\r\n")
         if self.write_result != "normal":
             return self.write_result
         return count
+
+    def _response(self, command):
+        if command.startswith(b"AT+ADDRESS="):
+            self.settings["address"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+NETWORKID="):
+            self.settings["network"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+BAND="):
+            self.settings["band"] = command.split(b"=", 1)[1].decode()
+        elif command.startswith(b"AT+PARAMETER="):
+            self.settings["parameter"] = command.split(b"=", 1)[1].decode()
+        response = {
+            b"AT": b"+OK",
+            b"AT+ADDRESS?": f"+ADDRESS={self.settings['address']}".encode(),
+            b"AT+NETWORKID?": f"+NETWORK={self.settings['network']}".encode(),
+            b"AT+BAND?": f"+BAND={self.settings['band']}".encode(),
+            b"AT+PARAMETER?": f"+PARAMETER={self.settings['parameter']}".encode(),
+            b"AT+VER?": b"+VER=RYLR998_V1.0",
+            b"AT+UID?": b"+UID=0123456789AB",
+        }.get(command, b"+OK")
+        return self.health_override.get(command, response)
 
     def flush(self):
         if self.flush_error:
@@ -161,6 +187,27 @@ class RadioTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "rejected"):
             rejected.open(lambda _frame: None)
         self.assertFalse(rejected.is_connected)
+
+    def test_health_check_probes_at_and_reads_back_modem_identity_settings(self):
+        transport, serials = self.make()
+        transport.open(lambda _frame: None)
+        report = transport.check_health()
+        self.assertTrue(report["healthy"])
+        self.assertTrue(all(report["checks"].values()))
+        self.assertEqual(report["responses"]["probe"], "+OK")
+        expected = (b"AT", b"AT+ADDRESS?", b"AT+NETWORKID?", b"AT+BAND?",
+                    b"AT+PARAMETER?", b"AT+VER?", b"AT+UID?")
+        self.assertEqual(tuple(serials[0].commands[-len(expected):]), expected)
+        self.assertEqual(transport.stats["health_checks"], 1)
+        transport.close()
+
+        mismatch, mismatch_serials = self.make(
+            health_override={b"AT+ADDRESS?": b"+ADDRESS=77"})
+        mismatch.open(lambda _frame: None)
+        report = mismatch.check_health()
+        self.assertFalse(report["healthy"])
+        self.assertFalse(report["checks"]["address_matches"])
+        mismatch.close()
 
     def test_optional_band_is_configured_and_old_session_callback_is_not_reused(self):
         instances = []
