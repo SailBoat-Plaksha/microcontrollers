@@ -1,5 +1,28 @@
 # ARSEM packet links
 
+## Python setup with uv
+
+The repository root is the shared Python project. Optional dependency groups
+keep the laptop UI and Raspberry Pi I2C dependency separate:
+
+```sh
+# Laptop ground station (NiceGUI + USB UART)
+uv sync --extra groundstation
+uv run --extra groundstation python -m groundstation.app
+
+# Raspberry Pi service (SMBus/I2C + USB/UART)
+uv sync --extra onboard
+uv run --extra onboard python -m onboard.boat_brain --port /dev/serial0 --baud 115200
+
+# Host tests (no physical ports or I2C devices are opened)
+uv run --extra groundstation --extra onboard python -m unittest discover -s tests -v
+uv run --extra groundstation --extra onboard python -m unittest discover -s groundstation/tests -v
+```
+
+`uv.lock` pins the resolved runtime dependencies. The motor bench helper under
+`tests/i2c_sail_motor_test/` has its own small uv project and lock file because
+it also installs `pymavlink` for dialect generation.
+
 The active packet paths use MAVLink 2. The Pi router and servo MCU exchange raw
 frames over USB serial. A LoRa gateway converts each complete frame to Base64
 only for the RYLR998 ASCII `AT+SEND` interface, then restores the original

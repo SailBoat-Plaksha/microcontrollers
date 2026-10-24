@@ -87,6 +87,16 @@ the Pi sends a valid command.
 
 ## 3. Set up the Pi Zero
 
+Install this folder's host-side Python tools with uv (run from this directory):
+
+```sh
+uv sync
+uv run python pi_send.py --help
+```
+
+The project pins `pymavlink`, `pyserial`, and `smbus2`; the hardware bench
+commands below still require the documented Pi, I2C wiring, and flashed MCU.
+
 Enable I2C with `sudo raspi-config` → Interface Options → I2C → Yes. Reboot if
 prompted. Run these commands on the Pi:
 
@@ -204,14 +214,12 @@ host checks, use Python 3.13 (verified here), or a supported Python version with
 the pinned packages. On a Pi you need not install pymavlink merely to run the
 sender; regeneration may require build dependencies if no package wheel exists.
 
-From the repository root:
+From this directory, use the optional dialect extra to regenerate MAVLink bindings:
 
 ```bash
-python3.13 -m venv tests/i2c_sail_motor_test/.venv
-tests/i2c_sail_motor_test/.venv/bin/pip install -r tests/i2c_sail_motor_test/requirements.txt
-tests/i2c_sail_motor_test/.venv/bin/python tests/i2c_sail_motor_test/generate.py
-tests/i2c_sail_motor_test/.venv/bin/python -m unittest discover \
-  -s tests/i2c_sail_motor_test -p test_bench.py -v
+uv sync --extra dialect
+uv run python generate.py
+uv run python -m unittest discover -s . -p test_bench.py -v
 ```
 
 The host checks compile and execute the actual `.ino` against fake time, GPIO,

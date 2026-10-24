@@ -1,0 +1,30 @@
+[project]
+name = "arsem-boat"
+version = "0.1.0"
+description = "MAVLink protocol, boat router, direct LoRa transport, and ground station"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pyserial==3.5"]
+
+[project.optional-dependencies]
+groundstation = ["nicegui==3.18.0"]
+onboard = ["smbus2==0.5.0"]
+
+[project.scripts]
+boat-groundstation = "groundstation.app:main"
+boat-groundstation-cli = "groundstation.cli:main"
+boat-onboard = "onboard.__main__:main"
+boat-brain = "onboard.boat_brain:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["boat", "protocol", "protocol.gen*", "onboard", "groundstation"]
+namespaces = true
+
+[tool.setuptools.package-data]
+protocol = ["arsem.xml", "gen/upstream/*.xml", "gen/upstream/SHA256SUMS"]
+onboard = ["config.example.toml"]

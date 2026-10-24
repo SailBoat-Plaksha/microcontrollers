@@ -4,12 +4,13 @@ Laptop NiceGUI interface and interactive CLI for `boat.BoatClient`. The GUI bind
 
 ## Install and launch
 
-Use a groundstation-local virtual environment; this does not use or modify the motor bench environment:
+Use the repository's uv environment from the repository root. The ground station
+extra installs NiceGUI; shared radio code and dependencies come from the root
+project:
 
 ```sh
-python3 -m venv groundstation/.venv
-groundstation/.venv/bin/python -m pip install -r groundstation/requirements.txt
-groundstation/.venv/bin/python -m groundstation.app
+uv sync --extra groundstation
+uv run --extra groundstation python -m groundstation.app
 ```
 
 Open `http://127.0.0.1:8080`. To choose another local port use `--port 8081`. Binding to a non-loopback address requires an explicit `--host` argument.
@@ -46,7 +47,7 @@ Commands are `absolute <degrees> [actuator 1|2]`, `step [degrees [actuator 1|2]]
 ## Headless checks
 
 ```sh
-python3 -m unittest discover -s groundstation/tests -v
+uv run --extra groundstation python -m unittest discover -s groundstation/tests -v
 ```
 
 Tests use fake serial/subprocess objects and the codec-backed in-process simulation. They do not open a physical serial port, SSH connection, or hardware bus. Run the commands from the repository root so `boat` and `protocol` resolve.

@@ -10,18 +10,18 @@ Run these from the repository root so `protocol` and `boat` are importable:
 # Host-only simulated bus; no device nodes are opened.
 python3 -m onboard serve --simulate --config onboard/config.example.toml
 
-# Pi service, after configuring I2C controller 1 for 100 kHz and installing smbus2.
-python3 -m pip install -r onboard/requirements.txt
-python3 -m onboard serve --config /etc/arsem/onboard.toml
+# Pi service, after configuring I2C controller 1 for 100 kHz.
+uv sync --extra onboard
+uv run --extra onboard python -m onboard serve --config /etc/arsem/onboard.toml
 
 # Persistent SSH raw-MAVLink stdio bridge. MAVLink bytes only on stdout; logs on stderr.
-python3 -m onboard bridge --config /etc/arsem/onboard.toml
+uv run --extra onboard python -m onboard bridge --config /etc/arsem/onboard.toml
 
 # Direct laptop USB-UART -> LoRa -> boat LoRa -> Pi UART; no comms Pico access.
-python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+uv run --extra onboard python -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
 
 # Named entry point for the main Raspberry Pi boat-brain process.
-python3 -m onboard.boat_brain --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+uv run --extra onboard python -m onboard.boat_brain --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
 
 `onboard.boat_brain` is a named launcher for the production direct-radio service, not a second router. It opens the configured I2C bus once, validates incoming MAVLink and applies the existing source/target/session/STOP checks, routes accepted requests to the configured I2C peers, polls their status plus the optional Pi-owned IMU, then sends returned MAVLink telemetry through the Pi's RYLR998 UART. `--simulate` is host-only and labels generated values; it does not open hardware.
@@ -95,7 +95,7 @@ Firmware and host harnesses use the checked-in generated header through `-Iproto
 Run the onboard host checks with:
 
 ```sh
-python3 -m unittest onboard.test_router -v
+uv run --extra onboard python -m unittest onboard.test_router -v
 ```
 
 Tests are deterministic, use `SimulatedBus`, and never open `/dev/i2c-*`, serial devices or hardware.
