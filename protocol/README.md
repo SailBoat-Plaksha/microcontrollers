@@ -41,7 +41,8 @@ checks CRC_EXTRA for all supported messages and rejects signed frames. Neither
 codec implements arbitrary message fragmentation, MAVLink signing, or every
 message in `common.xml`.
 
-The servo receives `ACTUATOR_SETPOINT` on raw USB serial and sends
-`ACTUATOR_STATUS` on the same link. It rejects bad CRC, wrong target, invalid
-angle, RC authority conflicts, and duplicate command IDs. Hardware motion,
-radio range, packet loss, and timing still require board-level testing.
+The default motor demo receives `ACTUATOR_REQUEST` (absolute, STEP or STOP)
+through a 64-byte I2C mailbox and returns `REQUEST_RESULT`, `ACTUATOR_STATUS`
+and health through Pi polling. The earlier `ACTUATOR_SETPOINT` USB handler
+remains in `Servo-Chip/operating_loops.c` for builds with `BOAT_MIDSEM_DEMO=OFF`.
+Hardware motion, radio range, packet loss and timing require board-level testing.

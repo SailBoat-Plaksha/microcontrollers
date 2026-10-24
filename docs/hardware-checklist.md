@@ -17,7 +17,7 @@ This checklist records work still required before physical deployment. Source in
 
 ## Shared I2C bus
 
-- [ ] Confirm Pi is the sole controller and both Pico peers plus IMU share the same bus. Verify the actual configured addresses do not collide; current contract proposals `0x08` and `0x09` require device confirmation.
+- [ ] Confirm Pi is the sole I2C controller. The direct-radio bench uses motor Pico `0x08` plus the optional configured IMU; comms Pico `0x09` is omitted. Check addresses against the actual devices.
 - [ ] Inspect idle SDA/SCL voltage, common ground, pull-ups, wiring and bus rise behavior with motor power isolated. Begin at 100 kHz as specified by `docs/contract.md`.
 - [ ] Exercise each peer independently, then the shared bus. Capture address acknowledgements and actual 64-byte mailbox transactions, including empty reads, padding, queue advancement, malformed-frame rejection and recovery. Do not infer this from compilation or a host harness.
 - [ ] Add the IMU only after its exact model/address and electrical requirements are known; capture actual register reads and identify Pi as the acquisition owner.
@@ -25,7 +25,7 @@ This checklist records work still required before physical deployment. Source in
 ## Radio
 
 - [ ] Confirm both REYAX RYLR998 module identities and matching radio settings, UART wiring/levels, antenna and power requirements.
-- [ ] Verify ground Pico USB-to-radio exchange, then boat-side reception and forwarding. Capture modem responses and decoded MAVLink frames in both directions; record link settings and observed range/latency conditions.
+- [ ] Verify laptop USB-UART-to-radio exchange, then receiving modem-to-Pi UART1 (`/dev/ttyS0`) and forwarding. Confirm GPIO14 TX / GPIO15 RX, serial login disabled, and UART1 clock/pin setup. Capture modem responses and decoded MAVLink frames in both directions; record link settings and observed range/latency conditions. Gateway Picos are optional alternatives.
 - [ ] Confirm disconnect/reconnect remains visible and does not replay a movement command. No radio exchange is established by source inspection.
 
 ## Motor and encoder

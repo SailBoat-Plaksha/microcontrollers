@@ -1,5 +1,11 @@
 # Software verification results
 
+## Pi UART1 update
+
+The boat-brain launcher now defaults to Pi Zero UART1 `/dev/ttyS0`, with an explicit `--port` override. After this change, 48 root tests and 42 Pi tests passed, as did all five direct-radio check groups. The entry-point test checks the selected device and modem settings without opening hardware. CLI help and `git diff --check` passed. No firmware code changed in this update.
+
+UART1 pin/clock setup was checked against the Raspberry Pi documentation, not a live Pi. See [UART1 setup](direct-radio.md#pi-uart1-setup). The [full software walkthrough](software-changes.md) explains existing motor-code reuse and the default autonomous path.
+
 ## Direct USB-UART radio update
 
 Checked on 2026-10-24 in `i2c+mavlink+midsem`, based on `d614fc7` with the scenario writer/callback synchronization change included. The source branch `i2c+mavlink` was left unchanged.

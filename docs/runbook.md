@@ -39,7 +39,7 @@ groundstation/.venv/bin/python -m pip install -r groundstation/requirements.txt
 groundstation/.venv/bin/python -m groundstation.app
 ```
 
-Open `http://127.0.0.1:8080`. The app defaults to loopback and simulation is selected in the interface. The fake transport tests do not open a serial port, SSH connection, or I2C bus:
+Open `http://127.0.0.1:8080`. The app defaults to loopback and direct USB-UART LoRa. Select simulation explicitly for generated values. The fake transport tests do not open a serial port, SSH connection, or I2C bus:
 
 ```sh
 python3 -m unittest discover -s groundstation/tests -v
@@ -57,13 +57,15 @@ A scenario marked `PENDING` is unfinished, and makes the runner exit nonzero. Th
 
 The current bench uses direct UART modems at both ends. Follow [direct-radio setup](direct-radio.md); neither radio hop needs a Pico gateway.
 
+Boat-side UART1 uses `/dev/ttyS0`, GPIO14 TX / GPIO15 RX, on the Pi Zero family. Complete the [UART1 OS setup](direct-radio.md#pi-uart1-setup) first; `/dev/serial1` is not a fixed hardware-UART number.
+
 The Pi service and bridge access the real configured I2C controller. Do not run these commands as part of the software-only checks. First install the Pi requirements and prepare `/etc/arsem/onboard.toml` from `onboard/config.example.toml`. Confirm the selected Linux I2C bus number, 100 kHz controller clock, peer addresses, wiring, and device presence. Keep IMU disabled until its exact model, register layout, byte order, and scale factors are known. The example configuration is not hardware calibration.
 
 Install the Pi dependencies and launch the direct-radio service:
 
 ```sh
 python3 -m pip install -r onboard/requirements.txt
-python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+python3 -m onboard radio --port /dev/ttyS0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
 
 The service has one process-wide bus lock. Run one of `radio`, legacy `serve`, or `bridge` at a time. The SSH bridge command for the ground station is:

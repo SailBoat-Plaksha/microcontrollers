@@ -18,13 +18,19 @@ uv run --extra onboard python -m onboard serve --config /etc/arsem/onboard.toml
 uv run --extra onboard python -m onboard bridge --config /etc/arsem/onboard.toml
 
 # Direct laptop USB-UART -> LoRa -> boat LoRa -> Pi UART; no comms Pico access.
-uv run --extra onboard python -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+uv run --extra onboard python -m onboard radio --port /dev/ttyS0 --baud 115200 --config /etc/arsem/onboard.toml
 
 # Named entry point for the main Raspberry Pi boat-brain process.
-uv run --extra onboard python -m onboard.boat_brain --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
+uv run --extra onboard python -m onboard.boat_brain --port /dev/ttyS0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
 
-`onboard.boat_brain` is a named launcher for the production direct-radio service, not a second router. It opens the configured I2C bus once, validates incoming MAVLink and applies the existing source/target/session/STOP checks, routes accepted requests to the configured I2C peers, polls their status plus the optional Pi-owned IMU, then sends returned MAVLink telemetry through the Pi's RYLR998 UART. `--simulate` is host-only and labels generated values; it does not open hardware.
+`onboard.boat_brain` is a named launcher for the production direct-radio service. It opens the configured I2C bus once, validates incoming MAVLink and applies the existing source/target/session/STOP checks, routes accepted requests to the configured I2C peers, polls their status plus the optional Pi-owned IMU, then sends returned MAVLink telemetry through the Pi's RYLR998 UART. `serve --simulate` opens no hardware. In `radio` / `boat-brain` mode, `--simulate` replaces the I2C bus only; the selected UART modem is still opened. Use the host scenarios for a fully fake radio path.
+
+The default modem port is `/dev/ttyS0`, UART1 (mini UART) on the Pi Zero family.
+It uses GPIO14 TX (header pin 8) and GPIO15 RX (header pin 10) after OS pin setup.
+`/dev/serial1` is a secondary-port alias and does not mean hardware UART1.
+See [Pi UART1 setup](../docs/direct-radio.md#pi-uart1-setup) before starting.
+An explicit `--port` still supports a USB-UART adapter or another configured device.
 
 Direct radio mode lazily imports the shared `boat.radio.LoRaModemTransport` and
 uses its frozen constructor:
