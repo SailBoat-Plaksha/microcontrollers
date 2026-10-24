@@ -1,0 +1,17 @@
+#ifndef SENSOR_MCU_CONFIG_H
+#define SENSOR_MCU_CONFIG_H
+#include "mailbox.h"
+#ifndef SENSOR_I2C
+#define SENSOR_I2C i2c0
+#endif
+#ifndef SENSOR_I2C_SDA_PIN
+#define SENSOR_I2C_SDA_PIN 0u
+#endif
+#ifndef SENSOR_I2C_SCL_PIN
+#define SENSOR_I2C_SCL_PIN 1u
+#endif
+#ifndef SENSOR_I2C_ADDRESS
+#define SENSOR_I2C_ADDRESS ARSEM_I2C_ADDR_SENSOR
+#endif
+#define SENSOR_BOOT_COMPONENT ARSEM_COMPONENT_SENSOR
+#endif
