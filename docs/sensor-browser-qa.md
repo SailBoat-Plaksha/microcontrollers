@@ -1,38 +1,52 @@
 # Sensor browser QA
 
-**Result: PASS** for the local simulation and codec-backed UI checks below.
+**Result: PASS** for the requested local simulation and browser checks on the integrated Pi and firmware branch. This retest supersedes the earlier `452ed9b` report; it does not establish physical Pi, Pico, sensor, radio, UART, or I2C operation.
 
-## Tested revision
+## Tested revision and runtime
 
-- Checkout: `t3/8329a39f`
-- Tested `HEAD`: `452ed9bc873f4734ef3a303b1c626aeb5e9a6bb0`
-- The requested parent commit `1e68e15ef6b39d159144318a00fadbb1c16078c1` is not an ancestor of this checkout. The tested `groundstation/app.py`, `boat/client.py`, and `groundstation/transports.py` match that commit byte-for-byte. The current checkout's `docs/sensor-contract.md` differs, and was the contract used for this review.
-
-## Runtime and browser
-
-Started NiceGUI from the repository root, bound to loopback port 8091:
-
-```sh
-uv run --extra groundstation python -m groundstation.app --host 127.0.0.1 --port 8091
-```
-
-`uv` created the repository `.venv` and installed the groundstation extra. No UART, Pi network, or physical hardware was used. The server and preview tab were closed after QA.
-
-T3 Preview was attempted first. `preview_status` initially returned `available:false`; `preview_open` then returned an available tab. Both snapshots timed out on the same step with the raw error `Preview snapshot failed: Preview automation snapshot timed out after 15000ms.` The browser fallback inventory was empty (`apps:[]`, `browsers:[]`), and opening `iab` returned the raw error `Browser is not available: iab`. Chromium headless was used as the fallback after those failures.
+- Checkout: `/home/rgcodes/.t3/worktrees/microcontrollers/t3-1b004284`
+- Branch: `sensor-browser-retest`
+- Tested `HEAD`: `10da3c44431248bc4b235b6d46d29faf9a5fe93d`
+- Includes `2ab8250` (Pi `1/1` IMU request target and live sample age) and `a8d4eb7` (Sensor Pico health card and complete dialect packaging).
+- NiceGUI ran at `http://127.0.0.1:8092/` with the codec-backed `SimulationTransport`. A temporary wrapper logged the actual encoded outbound simulation frames and delegated them to the current checkout's transport implementation. The test imported the current worktree modules; it did not reuse the older checkout's fake transport.
+- T3 Preview was used first. Its two page snapshots failed with the same raw error, so headless Chromium was used for browser interaction at 1366×768 and 390×844. No hardware was accessed.
 
 ## Checks
 
-- Simulation direct route: request 1 returned `OK`, source `1/1`, acquisition owner `Pi 1/1`, age `0 ms`, validity mask `0x0007`, acceleration `12, -8, 1000 mg`, angular rate `2, 0, -1 mrad/s`, and magnetic field `31, -24, 8 mgauss`. The UI showed `SIMULATED GENERATED READING`.
-- Simulation Sensor Pico route: request 2 returned `OK`, source `1/159`, acquisition owner `Pi 1/1`, age `0 ms`, validity mask `0x0007`, and all nine axes in the expected units. The UI kept the Pico reporting source distinct from the Pi acquisition owner and labeled the generated reading.
-- Both IMU buttons stayed enabled with a codec-backed fake transport when no motor status was present, confirming that motor readiness is not required for an IMU read.
-- The fake transport returned actual codec-encoded `IMU_SAMPLE` frames through `BoatClient`. A partial direct sample (`valid mask 0x0001`) showed acceleration and marked gyro and magnetometer invalid. A partial Pico sample (`0x0005`) showed acceleration and magnetometer and marked gyro invalid.
-- An `UNAVAILABLE (3)` response cleared validity to `0x0000` and displayed all axes as invalid. A withheld reply expired as `TIMEOUT (4)`, showed mask `0x0000`, and displayed all axes as invalid. This also confirmed stale valid fields are cleared on failure.
-- Clicking the existing STOP control in simulation emitted one `ACTUATOR_REQUEST` event. Disconnect and reconnect did not replay the IMU request or any actuator request.
-- At 1366×768 and 390×844, document and body scroll widths matched viewport width; no horizontal overflow was observed. Chromium reported zero console errors and zero uncaught page errors.
+- Both **Read IMU** and **Read via Sensor Pico** were enabled while connected.
+- Direct read showed `source 1/1`, acquisition owner `Pi 1/1`, status `OK`, validity `0x0007`, and all nine generated values: acceleration `12, -8, 1000 mg`, angular rate `2, 0, -1 mrad/s`, and magnetic field `31, -24, 8 mgauss`.
+- Pico read showed reporting source `1/159` and acquisition owner `Pi 1/1`, status `OK`, validity `0x0007`, and the same complete nine-axis generated values.
+- All four node cards rendered: Pi `1/1`, Motor Pico `1/154`, Sensor Pico `1/159`, and Comms Pico `1/158`. In simulation, the Sensor Pico card says **No heartbeat/status**; the card's presence is verified, but simulated Sensor Pico health telemetry is not.
+- The captured browser-originated `IMU_REQUEST` frame decoded to target `1/1`. Its frame bytes were `fd0f000001ffbe4b0d03ba28659801000000e80300000001018c24` (ground source `255/190`, direct path).
+- Fed that captured request frame into the current `SimulationTransport`; it accepted the request and emitted an `IMU_SAMPLE` with target fields `255/190`. The encoded response frame was `fd3300000101014c0d03ba2865980100000078bbda01010000000100000001000000000007000c00f8ffe80302000000ffff1f00e8ff0800010001ffbe6147`. This is a local codec-backed simulation check.
+- With no new IMU request for 5.4 seconds, the displayed age advanced from `319 ms` to `5582 ms`, the validity mask became `0x0000`, every axis displayed invalid, and the reading showed **STALE READING**.
+- STOP was available and generated one `ACTUATOR_REQUEST`. The captured outbound frame log contains exactly two `IMU_REQUEST` frames (the direct and Pico reads) and that one STOP frame; disconnect/reconnect added no IMU or movement frame.
+- At desktop width 1366 and mobile width 390 CSS pixels, document and body widths matched the viewport; neither layout had horizontal overflow.
+- Chromium reported no console errors or uncaught page errors.
 
 ## Screenshots
 
-- Desktop 1366×768, positioned at the IMU panel: `/tmp/groundstation-desktop-1366x768.png`
-- Mobile 390×844, positioned at the IMU panel: `/tmp/groundstation-mobile-390x844.png`
+- Desktop, 1366×768: `/tmp/sensor-browser-qa-desktop-1366x768.png`
+- Mobile, 390×844: `/tmp/sensor-browser-qa-mobile-390x844.png`
 
-The pass covers the local browser UI, generated simulation responses, and codec-backed host-side fake responses. It does not establish radio, UART, Pi, sensor-board, I2C, or physical IMU operation.
+## Raw browser and QA harness errors
+
+T3 Preview snapshot timed out twice with the same raw error:
+
+```text
+Preview snapshot failed: Preview automation snapshot timed out after 15000ms.
+```
+
+Two initial Chromium helper assertions also timed out because the helper used an exact text match for a label containing additional text, then an over-escaped regular expression. The selectors were corrected and the complete run passed; these were helper errors, not application console errors:
+
+```text
+locator.waitFor: Timeout 10000ms exceeded.
+  waiting for getByText('SIMULATED GENERATED READING', { exact: true }) to be visible
+```
+
+```text
+locator.innerText: Timeout 10000ms exceeded.
+  waiting for getByText(/Request \\d+ · status/).last()
+```
+
+The prior report's browser run on `452ed9b` is historical and has been replaced by this revision and these results.
