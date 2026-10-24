@@ -12,6 +12,7 @@ MESSAGES = {
     200003: "control_authority", 200004: "environmental_sample", 200005: "power_state",
     200006: "link_status", 200007: "bus_grant", 200008: "actuator_request",
     200009: "node_health", 200010: "request_result",
+    200011: "imu_request", 200012: "imu_sample",
 }
 
 crc = {}
@@ -57,7 +58,8 @@ for message_id, value in crc.items():
 lines += [
     "}", "MSG_HEARTBEAT = 0", "MSG_PING = 4", "MSG_SCALED_IMU = 26",
     "MSG_ACTUATOR_REQUEST = 200008", "MSG_NODE_HEALTH = 200009",
-    "MSG_REQUEST_RESULT = 200010", "MSG_LINK_STATUS = 200006", "",
+    "MSG_REQUEST_RESULT = 200010", "MSG_LINK_STATUS = 200006",
+    "MSG_IMU_REQUEST = 200011", "MSG_IMU_SAMPLE = 200012", "",
     "# MAVLink frame offset for opcode, from the generated 19-byte message layout.",
     "ACTUATOR_REQUEST_OPCODE_FRAME_OFFSET = %d" % opcode_frame_offset, "",
 ]

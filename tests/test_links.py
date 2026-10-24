@@ -25,7 +25,7 @@ class PacketLinks(unittest.TestCase):
         source = (ROOT / "protocol/mavlink_min.c").read_text()
         table = re.search(r"custom\[\] = \{([^}]+)\}", source).group(1)
         self.assertEqual([int(value) for value in table.split(",")],
-                         [MESSAGES[id_]["crc_extra"] for id_ in range(200000, 200011)])
+                         [MESSAGES[id_]["crc_extra"] for id_ in range(200000, 200013)])
 
     def test_serial_fragmentation_and_resynchronization(self):
         frames = [encode("ACTUATOR_SETPOINT", {**FIELDS, "command_id": n}, sequence=n) for n in range(100)]
