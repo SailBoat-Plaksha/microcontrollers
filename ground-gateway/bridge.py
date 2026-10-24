@@ -205,7 +205,7 @@ class ATBridge:
             except (OSError, ValueError):
                 written = 0
             if written is not None and written > 0:
-                del self.usb_tx_buffer[:min(written, len(self.usb_tx_buffer))]
+                self.usb_tx_buffer = self.usb_tx_buffer[written:]
 
         if self.uart_tx_buffer:
             try:
@@ -213,7 +213,7 @@ class ATBridge:
             except (OSError, ValueError):
                 written = 0
             if written is not None and written > 0:
-                del self.uart_tx_buffer[:min(written, len(self.uart_tx_buffer))]
+                self.uart_tx_buffer = self.uart_tx_buffer[written:]
 
     def status(self):
         """Current state metrics."""

@@ -223,9 +223,13 @@ class LoRaModemTransport:
                 self.stats["tx_errors"] += 1
                 raise TimeoutError(f"RYLR998 command timed out; outcome uncertain: {command[:32]!r}")
             result = pending["result"]
-            if result != "ok" and not (response_prefix is not None and
-                                         isinstance(result, str) and
-                                         result.startswith(response_prefix.decode("ascii"))):
+            valid_prefix = False
+            if response_prefix is not None and isinstance(result, str):
+                if isinstance(response_prefix, tuple):
+                    valid_prefix = any(result.startswith(p.decode("ascii")) for p in response_prefix)
+                else:
+                    valid_prefix = result.startswith(response_prefix.decode("ascii"))
+            if result != "ok" and not valid_prefix:
                 self.stats["tx_errors"] += 1
                 raise OSError(f"RYLR998 rejected command: {result}")
             if config:
@@ -286,7 +290,7 @@ class LoRaModemTransport:
             if line.startswith(b"+ERR="):
                 self._status("modem " + line.decode("ascii", "replace"))
             return
-        if line.startswith((b"+ADDRESS=", b"+NETWORK=", b"+BAND=", b"+PARAMETER=",
+        if line.startswith((b"+ADDRESS=", b"+NETWORKID=", b"+NETWORK=", b"+BAND=", b"+PARAMETER=",
                             b"+VER=", b"+UID=")):
             with self._state_lock:
                 if generation == self._generation and serial_obj is self._serial:
@@ -396,7 +400,7 @@ class LoRaModemTransport:
             raise ConnectionError("LoRa modem transport is disconnected")
         queries = (("probe", b"AT\r\n", None),
                    ("address", b"AT+ADDRESS?\r\n", b"+ADDRESS="),
-                   ("network_id", b"AT+NETWORKID?\r\n", b"+NETWORK="),
+                   ("network_id", b"AT+NETWORKID?\r\n", (b"+NETWORKID=", b"+NETWORK=")),
                    ("band_hz", b"AT+BAND?\r\n", b"+BAND="),
                    ("parameter", b"AT+PARAMETER?\r\n", b"+PARAMETER="),
                    ("version", b"AT+VER?\r\n", b"+VER="),
