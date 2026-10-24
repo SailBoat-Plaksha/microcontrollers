@@ -49,6 +49,7 @@ class ServiceConfig:
     comms_component: int = COMPONENT_COMMS_SENSOR
     poll_interval_ms: int = 20
     queue_limit: int = 128
+    comms_enabled: bool = True
     imu: IMURegisterConfig | None = None
 
     def __post_init__(self) -> None:
@@ -57,6 +58,8 @@ class ServiceConfig:
                           self.comms_component, self.poll_interval_ms, self.queue_limit)
         if any(not isinstance(value, int) or isinstance(value, bool) for value in integer_fields):
             raise ValueError("bus, peer and scheduler settings must be integers")
+        if not isinstance(self.comms_enabled, bool):
+            raise ValueError("comms_enabled must be true or false")
         if self.bus_number < 0 or self.bus_hz != BUS_HZ:
             raise ValueError("bus number must be nonnegative and bus_hz is fixed at 100000")
         addresses = (self.motor_address, self.comms_address)
@@ -82,13 +85,18 @@ class ServiceConfig:
     def from_toml(cls, path: str | Path) -> "ServiceConfig":
         with Path(path).open("rb") as stream:
             data = tomllib.load(stream)
+        unknown_top_level = set(data) - {"bus", "peers", "scheduler", "service", "imu"}
+        if unknown_top_level:
+            raise ValueError(f"unknown top-level settings: {sorted(unknown_top_level)}")
         bus = _table(data, "bus")
         peers = _table(data, "peers")
         scheduler = _table(data, "scheduler")
+        service = _table(data, "service")
         for table_name, table, allowed in (
                 ("bus", bus, {"number", "hz"}),
                 ("peers", peers, {"motor_address", "comms_address", "motor_component", "comms_component"}),
-                ("scheduler", scheduler, {"poll_interval_ms", "queue_limit"})):
+                ("scheduler", scheduler, {"poll_interval_ms", "queue_limit"}),
+                ("service", service, {"comms_enabled"})):
             unknown = set(table) - allowed
             if unknown:
                 raise ValueError(f"unknown {table_name} settings: {sorted(unknown)}")
@@ -111,13 +119,17 @@ class ServiceConfig:
                 raise ValueError(f"incomplete imu configuration: {exc}") from exc
         else:
             imu = None
+        comms_enabled = service.get("comms_enabled", True)
+        if not isinstance(comms_enabled, bool):
+            raise ValueError("service.comms_enabled must be true or false")
         return cls(bus_number=bus.get("number", 1), bus_hz=bus.get("hz", BUS_HZ),
                    motor_address=peers.get("motor_address", 0x08),
                    comms_address=peers.get("comms_address", 0x09),
                    motor_component=peers.get("motor_component", COMPONENT_MOTOR),
                    comms_component=peers.get("comms_component", COMPONENT_COMMS_SENSOR),
                    poll_interval_ms=scheduler.get("poll_interval_ms", 20),
-                   queue_limit=scheduler.get("queue_limit", 128), imu=imu)
+                   queue_limit=scheduler.get("queue_limit", 128),
+                   comms_enabled=comms_enabled, imu=imu)
 
 
 def _table(data: dict, name: str) -> dict:

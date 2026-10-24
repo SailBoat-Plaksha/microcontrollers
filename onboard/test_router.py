@@ -14,7 +14,7 @@ from boat.ids import COMPONENT_GROUND, COMPONENT_MOTOR, SYSTEM_BOAT, SYSTEM_GROU
 from protocol import codec
 
 from onboard import BoatRouter, IMURegisterConfig, ServiceConfig, SimulatedBus
-from onboard.__main__ import _enqueue_stdout
+from onboard.__main__ import _enqueue_stdout, _make_radio_transport, _run_radio_service
 
 
 class Clock:
@@ -119,6 +119,143 @@ class RouterTests(unittest.TestCase):
                       if codec.decode(frame)["name"] == "SCALED_IMU")
         self.assertEqual(sample["name"], "SCALED_IMU")
         self.assertEqual(sample["fields"]["zacc"], 1000)
+
+    def test_radio_ingress_motor_write_and_returned_result_never_touch_comms(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        output = []
+        router = BoatRouter(bus, cfg, clock=self.clock, on_frame=output.append)
+        router._observe_node_message(codec.decode(health()), health())
+        router._observe_node_message(codec.decode(status()), status())
+        frame = ground_request(opcode=1, delta=100)
+        self.assertTrue(router.submit_frame(frame, ingress="radio"))
+        router.step()
+        write = next(op for op in bus.operations if op.kind == "write")
+        routed = codec.decode(router._decode_mailbox(write.data))
+        self.assertEqual((write.address, routed["system"], routed["component"]), (0x08, 1, 1))
+
+        result = codec.encode("REQUEST_RESULT", {
+            "ground_session": 123, "request_id": 1, "motor_boot_id": 55,
+            "local_command_id": 7, "result": 1, "state": 4,
+            "target_system": SYSTEM_GROUND, "target_component": COMPONENT_GROUND,
+        }, system=SYSTEM_BOAT, component=COMPONENT_MOTOR)
+        bus.inject_frame(0x08, result)
+        router._poll_node(0x08)
+        results = [codec.decode(item) for item in output
+                   if codec.decode(item)["name"] == "REQUEST_RESULT"]
+        self.assertEqual(results[-1]["fields"]["request_id"], 1)
+        self.assertEqual({op.address for op in bus.operations}, {0x08})
+        self.assertEqual(router._poll_addresses, [0x08])
+
+    def test_radio_ping_and_optional_imu_return_on_callback(self):
+        cfg = ServiceConfig(comms_enabled=False, imu=IMURegisterConfig(
+            address=0x68, register=0x3B, accel_scale_mg_per_count=1,
+            gyro_scale_mrad_s_per_count=1))
+        bus = SimulatedBus(present=(0x08,), imu_samples={0x68: struct.pack("<6h", 1, 2, 3, 4, 5, 6)})
+        output = []
+        router = BoatRouter(bus, cfg, clock=self.clock, on_frame=output.append)
+        ping = codec.encode("PING", {"time_usec": 42, "seq": 9,
+            "target_system": 0, "target_component": 0}, system=SYSTEM_GROUND,
+            component=COMPONENT_GROUND)
+        self.assertTrue(router.submit_frame(ping, ingress="radio"))
+        self.assertTrue(router._poll_imu())
+        names = [codec.decode(frame)["name"] for frame in output]
+        self.assertIn("PING", names)
+        self.assertIn("SCALED_IMU", names)
+        reply = next(codec.decode(frame) for frame in output if codec.decode(frame)["name"] == "PING")
+        self.assertEqual((reply["system"], reply["component"],
+                          reply["fields"]["target_system"], reply["fields"]["target_component"]),
+                         (SYSTEM_BOAT, 1, SYSTEM_GROUND, COMPONENT_GROUND))
+        self.assertFalse(any(op.address == 0x09 for op in bus.operations))
+
+    def test_direct_radio_config_is_strict_and_transport_factory_uses_frozen_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "onboard.toml"
+            path.write_text("[service]\ncomms_enabled = false\n")
+            self.assertFalse(ServiceConfig.from_toml(path).comms_enabled)
+            path.write_text("[service]\ncomms_enabled = 1\n")
+            with self.assertRaisesRegex(ValueError, "true or false"):
+                ServiceConfig.from_toml(path)
+            path.write_text("[service]\ncomms_enabled = false\n[unknown]\nx=1\n")
+            with self.assertRaisesRegex(ValueError, "unknown"):
+                ServiceConfig.from_toml(path)
+
+        captured = {}
+        class Transport:
+            def __init__(self, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+        class Args:
+            port, baud, local_address, peer_address = "/dev/serial0", 115200, 1, 2
+            network_id, band_hz, parameter = 18, None, "10,7,1,12"
+        _make_radio_transport(Args(), Transport)
+        self.assertEqual(captured["args"], ("/dev/serial0",))
+        self.assertEqual(captured["kwargs"], {"baudrate": 115200, "local_address": 1,
+            "peer_address": 2, "network_id": 18, "band_hz": None,
+            "parameter": "10,7,1,12"})
+
+    def test_radio_service_bounded_handoff_cancels_unsent_motion_and_closes(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        events = []
+        router = BoatRouter(bus, cfg, clock=self.clock, on_event=events.append)
+        router._observe_node_message(codec.decode(health()), health())
+        router._observe_node_message(codec.decode(status()), status())
+        self.assertTrue(router.submit_frame(ground_request(), ingress="radio"))
+
+        class Transport:
+            is_connected = False
+            def __init__(self): self.closed = False
+            def open(self, callback):
+                callback(ground_request(request_id=2))
+                callback(ground_request(request_id=3))  # bounded callback queue overflows
+            def close(self): self.closed = True
+            def send_frame(self, frame): raise AssertionError("disconnected transport must not send")
+        transport = Transport()
+        error_log = io.StringIO()
+        with redirect_stderr(error_log):
+            _run_radio_service(router, transport, lambda: False, incoming_limit=1)
+        self.assertTrue(transport.closed)
+        self.assertFalse(any(item.motion for item in (*router._normal, *router._stops)))
+        self.assertIn("queue full", error_log.getvalue())
+        self.assertIn("cancelled", error_log.getvalue())
+        self.assertTrue(any(event.kind == "request_result" and "cancelled" in event.detail
+                            for event in events))
+
+    def test_radio_service_routes_router_output_to_transport(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        bus = SimulatedBus(present=(cfg.motor_address,))
+        router = BoatRouter(bus, cfg, clock=self.clock)
+        router._last_heartbeat = self.clock() - 1.1
+        sent = []
+        active = [True]
+        class Transport:
+            is_connected = True
+            def open(self, callback): self.receive = callback
+            def close(self): pass
+            def send_frame(self, frame): sent.append(codec.decode(frame)["name"])
+        transport = Transport()
+        def sleep(_delay): active[0] = False
+        _run_radio_service(router, transport, lambda: not active[0], sleep=sleep)
+        self.assertIn("HEARTBEAT", sent)
+        self.assertFalse(any(op.address == 0x09 for op in bus.operations))
+
+    def test_radio_rejects_malformed_and_wrong_source_authority(self):
+        cfg = ServiceConfig(comms_enabled=False)
+        router = BoatRouter(SimulatedBus(present=(0x08,)), cfg, clock=self.clock,
+                            on_event=self.events.append)
+        damaged = bytearray(ground_request())
+        damaged[-1] ^= 1
+        self.assertFalse(router.submit_frame(bytes(damaged), ingress="radio"))
+        wrong_source = codec.encode("ACTUATOR_REQUEST", codec.decode(ground_request())["fields"],
+                                    system=1, component=1)
+        self.assertFalse(router.submit_frame(wrong_source, ingress="radio"))
+        wrong_authority = codec.decode(ground_request())["fields"]
+        wrong_authority["control_source"] = 2
+        denied = codec.encode("ACTUATOR_REQUEST", wrong_authority, system=SYSTEM_GROUND,
+                              component=COMPONENT_GROUND)
+        self.assertFalse(router.submit_frame(denied, ingress="radio"))
+        self.assertTrue(any(event.kind == "rejected" for event in self.events))
 
     def test_imu_validity_expires_and_recovery_is_reported_immediately(self):
         cfg = ServiceConfig(imu=IMURegisterConfig(

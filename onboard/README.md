@@ -16,7 +16,31 @@ python3 -m onboard serve --config /etc/arsem/onboard.toml
 
 # Persistent SSH raw-MAVLink stdio bridge. MAVLink bytes only on stdout; logs on stderr.
 python3 -m onboard bridge --config /etc/arsem/onboard.toml
+
+# Direct laptop USB-UART -> LoRa -> boat LoRa -> Pi UART; no comms Pico access.
+python3 -m onboard radio --port /dev/serial0 --baud 115200 --config /etc/arsem/onboard.toml
 ```
+
+Direct radio mode lazily imports the shared `boat.radio.LoRaModemTransport` and
+uses its frozen constructor:
+
+```python
+LoRaModemTransport(port, baudrate=115200, *, local_address=1,
+    peer_address=2, network_id=18, band_hz=None, parameter="10,7,1,12",
+    serial_factory=None, command_timeout_s=3.0, send_gap_s=0.0, queue_limit=32)
+```
+
+Use `--local-address`, `--peer-address`, `--network-id`, `--band-hz` and
+`--parameter` to override modem settings. Omitting `--band-hz` leaves the
+configured modem frequency unchanged. The modem callback copies complete raw
+MAVLink frames into a bounded handoff queue; only the serialized Pi service
+loop calls `BoatRouter.submit_frame(..., ingress="radio")` and performs I2C.
+Pi replies, motor results/status, health, ping replies and optional IMU samples
+return through the same transport. Direct-radio mode sets `comms_enabled=false`
+regardless of TOML, so address `0x09` is excluded from polling and writes. On
+disconnect or queue overflow the error is logged; unsent movement is cancelled
+before the transport closes. Restart the command explicitly to reconnect; no
+movement is replayed.
 
 The process holds a nonblocking lock at `/tmp/arsem-onboard-bus-<uid>.lock`; a second service or bridge process exits with an error instead of opening the bus. Run one mode at a time. The bridge accepts fragmented raw MAVLink frames on stdin and writes complete response frames to stdout. SSH host keys and authentication are managed by the caller's normal SSH configuration; pass a fixed remote command rather than user-provided shell text.
 
@@ -44,6 +68,10 @@ router = BoatRouter(
 router.submit_frame(raw_frame, ingress="ssh")  # or ingress="comms"
 router.step()  # at most one serialized bus transaction
 ```
+
+`ingress="radio"` uses the same ground source, target, authority, session and
+freshness checks. `ServiceConfig.comms_enabled` defaults to `True` for existing
+serve/SSH deployments; direct-radio mode explicitly disables the comms peer.
 
 `I2CBus` is the injectable protocol: `write_mailbox(address, data)`, `read_mailbox(address)`, `read_registers(address, register, length)`, and `close()`. `SimulatedBus.inject_frame()` supplies deterministic peer mailbox replies, `inject_fault()` injects read/write/IMU failures, and `operations` records bus access for scenario traces. `BoatRouter.snapshots[(system, component)][message_name]` contains the latest received status/health frame; `node_present`, `node_last_seen`, `node_boot_ids`, `node_health`, `imu_valid_fields`, `imu_last_sample` and `imu_error` expose current observations to a later scenario runner or GUI simulation adapter.
 

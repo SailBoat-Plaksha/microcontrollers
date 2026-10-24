@@ -61,7 +61,9 @@ class BoatRouter:
         self._normal: deque[_Write] = deque()
         self._stops: deque[_Write] = deque()
         self._stop_limit = max(1, self.config.queue_limit)
-        self._poll_addresses = [self.config.motor_address, self.config.comms_address]
+        self._poll_addresses = [self.config.motor_address]
+        if self.config.comms_enabled:
+            self._poll_addresses.append(self.config.comms_address)
         if self.config.imu:
             self._poll_addresses.append(self.config.imu.address)
         self._poll_index = 0
@@ -108,8 +110,11 @@ class BoatRouter:
         if message["name"] not in ALLOWED_MESSAGES:
             self._event("rejected", "message is not allowlisted", frame)
             return False
-        if ingress not in ("ssh", "comms"):
+        if ingress not in ("ssh", "comms", "radio"):
             self._event("rejected", "unknown ingress", frame)
+            return False
+        if ingress == "comms" and not self.config.comms_enabled:
+            self._event("rejected", "comms ingress is disabled", frame)
             return False
         if (message["system"], message["component"]) != (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND):
             self._event("rejected", "command source must be ground 255/190", frame)
@@ -123,7 +128,7 @@ class BoatRouter:
         if name == "PING":
             if (fields["target_system"], fields["target_component"]) == (0, 0):
                 self._queue_ping_reply(message, ingress)
-                if ingress != "comms":
+                if ingress != "comms" and self.config.comms_enabled:
                     self._queue(frame, self.config.comms_address, 1)
                 self._queue(frame, self.config.motor_address, 1)
                 return True
@@ -142,7 +147,10 @@ class BoatRouter:
                 now - self.imu_last_seen > IMU_SAMPLE_MAX_AGE_SECONDS):
             self.imu_valid_fields = 0
             self._emit_health(force=True)
-        for address in (self.config.motor_address, self.config.comms_address):
+        addresses = [self.config.motor_address]
+        if self.config.comms_enabled:
+            addresses.append(self.config.comms_address)
+        for address in addresses:
             identity = self._node_for_address(address)
             seen = self.node_last_seen.get(identity)
             self.node_present[identity] = seen is not None and now - seen <= 5.0
@@ -174,6 +182,27 @@ class BoatRouter:
 
     def close(self) -> None:
         self.bus.close()
+
+    def cancel_unsent_motion(self, reason: str = "radio disconnected; unsent movement cancelled") -> int:
+        """Remove all not-yet-written actuator requests before transport reconnect."""
+        removed = 0
+        for pending_queue in (self._normal, self._stops):
+            kept = deque()
+            while pending_queue:
+                item = pending_queue.popleft()
+                if item.motion:
+                    removed += 1
+                    if item.key is not None:
+                        self._make_result(item.key,
+                            self.node_boot_ids.get((ids.SYSTEM_BOAT, self.config.motor_component), 0),
+                            0, 4, 6, reason, enqueue=False)
+                    else:
+                        self.queue_drops += 1
+                        self._event("queue_drop", reason, item.frame)
+                else:
+                    kept.append(item)
+            pending_queue.extend(kept)
+        return removed
 
     def _accept_request(self, original: bytes, fields: dict[str, int], ingress: str) -> bool:
         key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, fields["ground_session"])
@@ -359,7 +388,8 @@ class BoatRouter:
 
     def _route_result(self, key: tuple[int, int, int, int], frame: bytes,
                       *, route: str | None = None) -> None:
-        if route == "comms" or (route is None and self._request_routes.get(key) == "comms"):
+        if self.config.comms_enabled and (route == "comms" or
+                (route is None and self._request_routes.get(key) == "comms")):
             self._queue(frame, self.config.comms_address, 1, key)
         else:
             self.on_frame(frame)
@@ -368,7 +398,7 @@ class BoatRouter:
         record = self._requests[key]
         frame = record.get("result_frame")
         if isinstance(frame, bytes):
-            if ingress == "comms":
+            if ingress == "comms" and self.config.comms_enabled:
                 self._queue(frame, self.config.comms_address, 1, key)
             else:
                 self.on_frame(frame)
@@ -614,7 +644,7 @@ class BoatRouter:
             else:
                 # A Pi restart may have lost its in-memory ledger; return the motor's
                 # correlated observation so the ground client can match its session.
-                if self._request_routes.get(request_key) == "comms":
+                if self.config.comms_enabled and self._request_routes.get(request_key) == "comms":
                     self._queue(frame, self.config.comms_address, 1)
                 else:
                     self.on_frame(frame)
@@ -623,7 +653,8 @@ class BoatRouter:
             return
         self.snapshots.setdefault(source, {})[name] = bytes(frame)
         self.on_frame(frame)
-        if source[1] == self.config.motor_component and name != "REQUEST_RESULT":
+        if (self.config.comms_enabled and source[1] == self.config.motor_component and
+                name != "REQUEST_RESULT"):
             self._queue(frame, self.config.comms_address, 1)
         self._event("frame", f"forwarded {name} from {source[0]}/{source[1]}", frame, source)
 
@@ -672,7 +703,8 @@ class BoatRouter:
                 "xmag": 0, "ymag": 0, "zmag": 0, "temperature": 0},
                 system=ids.SYSTEM_BOAT, component=ids.COMPONENT_PI, sequence=self._next_sequence())
             self.on_frame(frame)
-            self._queue(frame, self.config.comms_address, 1)
+            if self.config.comms_enabled:
+                self._queue(frame, self.config.comms_address, 1)
             self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False) else "IMU register sample", frame, (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
             # A successful read after expiry or a read fault must restore the
             # advertised health immediately, even if health was emitted moments ago.
@@ -700,7 +732,8 @@ class BoatRouter:
             self.node_last_seen[(ids.SYSTEM_BOAT, ids.COMPONENT_PI)] = now
             self.snapshots.setdefault((ids.SYSTEM_BOAT, ids.COMPONENT_PI), {})["HEARTBEAT"] = frame
             self.on_frame(frame)
-            self._queue(frame, self.config.comms_address, 1)
+            if self.config.comms_enabled:
+                self._queue(frame, self.config.comms_address, 1)
         if now - self._last_health >= 1.0:
             self._emit_health()
 
@@ -721,7 +754,8 @@ class BoatRouter:
         self.node_last_seen[(ids.SYSTEM_BOAT, ids.COMPONENT_PI)] = now
         self.snapshots.setdefault((ids.SYSTEM_BOAT, ids.COMPONENT_PI), {})["NODE_HEALTH"] = frame
         self.on_frame(frame)
-        self._queue(frame, self.config.comms_address, 1)
+        if self.config.comms_enabled:
+            self._queue(frame, self.config.comms_address, 1)
         self._event("health", "Pi IMU health", frame, (ids.SYSTEM_BOAT, ids.COMPONENT_PI))
 
     def _queue_ping_reply(self, message: dict, ingress: str) -> None:
@@ -734,7 +768,7 @@ class BoatRouter:
         self._route_upstream(reply, ingress)
 
     def _route_upstream(self, frame: bytes, ingress: str) -> None:
-        if ingress == "comms":
+        if ingress == "comms" and self.config.comms_enabled:
             self._queue(frame, self.config.comms_address, 1)
         else:
             self.on_frame(frame)
