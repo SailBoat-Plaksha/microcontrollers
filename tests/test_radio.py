@@ -4,6 +4,7 @@ import time
 import unittest
 
 from boat.radio import LoRaModemTransport
+from boat.client import BoatClient, RawFrameEvent
 from protocol import codec
 
 
@@ -21,6 +22,9 @@ class FakeSerial:
         self.closed = False
         self.hold_acks = False
         self.pending_acks = 0
+        self.before_ack = None
+        self.flush_error = None
+        self.write_result = "normal"
 
     def read(self, count):
         with self.cv:
@@ -43,17 +47,22 @@ class FakeSerial:
         self.wire.extend(actual)
         if b"\n" in self.wire:
             while b"\n" in self.wire:
-                _, rest = self.wire.split(b"\n", 1)
+                completed, rest = self.wire.split(b"\n", 1)
                 self.wire = bytearray(rest)
                 if self.ack:
-                    if self.hold_acks:
+                    if self.before_ack and completed.startswith(b"AT+SEND="):
+                        self.inject(self.before_ack + b"+OK\r\n")
+                    elif self.hold_acks:
                         self.pending_acks += 1
                     else:
                         self.inject(b"+OK\r\n")
+        if self.write_result != "normal":
+            return self.write_result
         return count
 
     def flush(self):
-        pass
+        if self.flush_error:
+            raise self.flush_error
 
     def inject(self, data, fragments=()):
         with self.cv:
@@ -248,6 +257,83 @@ class RadioTransportTests(unittest.TestCase):
         other.close()
         with self.assertRaises(ConnectionError):
             other.send_frame(first)
+
+    def test_boat_client_ack_parser_progresses_while_frame_callback_waits_for_client_lock(self):
+        transport, serials = self.make()
+        client = BoatClient(transport)
+        events = []
+        client.subscribe(events.append)
+        client.connect()
+        modem = serials[0]
+        incoming = codec.encode("PING", {"time_usec": 42, "seq": 9,
+            "target_system": 0, "target_component": 0}, system=1, component=154)
+        payload = base64.b64encode(incoming)
+        modem.before_ack = (b"+RCV=1," + str(len(payload)).encode() + b"," + payload + b",-80,9\r\n")
+        client.ping_all()
+        deadline = time.monotonic() + 1
+        while not any(isinstance(event, RawFrameEvent) and event.direction == "in"
+                      for event in events) and time.monotonic() < deadline:
+            time.sleep(.005)
+        self.assertTrue(transport.is_connected)
+        self.assertEqual(transport.stats["tx_accepted"], 1)
+        self.assertTrue(any(isinstance(event, RawFrameEvent) and event.bytes == incoming
+                            for event in events))
+        client.disconnect()
+
+    def test_invalid_serial_write_counts_and_flush_failure_are_uncertain(self):
+        for result in (None, 0, -1, True, 999):
+            with self.subTest(result=result):
+                transport, serials = self.make()
+                transport.open(lambda _frame: None)
+                modem = serials[0]
+                modem.write_result = result
+                with self.assertRaises(OSError):
+                    transport.send_frame(frame())
+                self.assertFalse(transport.is_connected)
+                self.assertEqual(sum(call.startswith(b"AT+SEND=") for call in modem.calls), 1)
+                transport.close()
+
+        transport, serials = self.make()
+        transport.open(lambda _frame: None)
+        modem = serials[0]
+        modem.flush_error = OSError("flush failed")
+        with self.assertRaisesRegex(OSError, "flush failed"):
+            transport.send_frame(frame())
+        self.assertFalse(transport.is_connected)
+        self.assertEqual(sum(call.startswith(b"AT+SEND=") for call in modem.calls), 1)
+        transport.close()
+
+    def test_numeric_and_parameter_configuration_is_strict_and_canonical(self):
+        for options in ({"command_timeout_s": float("nan")},
+                        {"command_timeout_s": float("inf")},
+                        {"send_gap_s": float("nan")}, {"queue_limit": True},
+                        {"baudrate": True}, {"baudrate": 0},
+                        {"parameter": "10,7,1,12\r\nAT"}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                LoRaModemTransport("fake", **options)
+        with self.assertRaises(ValueError):
+            LoRaModemTransport("x\nAT+SEND=1")
+        serials = []
+        transport = LoRaModemTransport("fake", serial_factory=lambda *a, **k:
+            (serials.append(FakeSerial(*a, **k)) or serials[-1]),
+            command_timeout_s=.15, parameter="010, 07, 01, 12")
+        transport.open(lambda _frame: None)
+        self.assertIn(b"AT+PARAMETER=10,7,1,12\r\n", b"".join(serials[0].calls))
+        transport.close()
+
+    def test_modem_reset_after_ready_disconnects_and_requires_explicit_reopen(self):
+        transport, serials = self.make()
+        transport.open(lambda _frame: None)
+        serials[0].inject(b"+READY\r\n")
+        deadline = time.monotonic() + 1
+        while transport.is_connected and time.monotonic() < deadline:
+            time.sleep(.005)
+        self.assertFalse(transport.is_connected)
+        with self.assertRaises(ConnectionError):
+            transport.send_frame(frame())
+        transport.open(lambda _frame: None)
+        self.assertTrue(transport.is_connected)
+        transport.close()
 
     @staticmethod
     def _capture(errors, fn, *args):
