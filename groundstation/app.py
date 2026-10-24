@@ -136,20 +136,42 @@ def _disconnect():
                     STATE.enqueue(exc)
 
 
-def _check_modem_health():
+def _check_modem_health(port=None, baud=115200, radio_settings=None):
     with STATE.lock:
         transport = STATE.transport
         connected = STATE.connected
-    if not connected or transport is None or not callable(getattr(transport, "check_health", None)):
+    if connected and transport is not None and callable(getattr(transport, "check_health", None)):
+        try:
+            report = transport.check_health()
+        except Exception as exc:
+            with STATE.lock:
+                STATE.detail = f"LoRa modem health check failed: {type(exc).__name__}: {exc}"
+                if not getattr(transport, "is_connected", True):
+                    STATE.uncertain = True
+            return {"healthy": False, "error": f"{type(exc).__name__}: {exc}"}
+        transport_name = transport.name
+    elif port:
+        from .modem_check import verify_modem
+        settings = dict(radio_settings or {})
+        try:
+            report = verify_modem(
+                port=port,
+                baudrate=int(baud),
+                command_timeout_s=1.0,
+                local_address=settings.get("local_address", 2),
+                peer_address=settings.get("peer_address", 1),
+                network_id=settings.get("network_id", 18),
+                band_hz=settings.get("band_hz"),
+                parameter=settings.get("parameter", "9,7,1,12"),
+            )
+        except Exception as exc:
+            with STATE.lock:
+                STATE.detail = f"LoRa modem standalone check failed: {type(exc).__name__}: {exc}"
+            return {"healthy": False, "error": f"{type(exc).__name__}: {exc}"}
+        transport_name = "LoRa modem (standalone probe)"
+    else:
         raise RuntimeError("Connect the direct USB-UART LoRa modem before checking modem health.")
-    try:
-        report = transport.check_health()
-    except Exception as exc:
-        with STATE.lock:
-            STATE.detail = f"LoRa modem health check failed: {type(exc).__name__}: {exc}"
-            if not getattr(transport, "is_connected", True):
-                STATE.uncertain = True
-        return {"healthy": False, "error": f"{type(exc).__name__}: {exc}"}
+
     responses = report["responses"]
     summary = (f"LoRa modem health {'OK' if report['healthy'] else 'CHECK FAILED'} · "
                f"address {responses.get('address', '?')} · "
@@ -159,7 +181,7 @@ def _check_modem_health():
                f"{responses.get('version', '?')} · UID {responses.get('uid', '?')}")
     with STATE.lock:
         STATE.detail = summary
-    STATE.enqueue(TransportLog(transport.name, summary))
+    STATE.enqueue(TransportLog(transport_name, summary))
     return report
 
 
@@ -226,7 +248,17 @@ def build_ui(ui):
                     peer_address = ui.number("Expected boat modem peer", value=1, min=0, max=65535, precision=0).classes("w-48")
                     network_id = ui.number("Network ID", value=18, min=3, max=18, precision=0).classes("w-36")
                     band_hz = ui.input("Band frequency Hz (optional)", value="").classes("w-56")
-                    parameter = ui.input("RF parameters (SF,BW,CR,preamble)", value="10,7,1,12").classes("w-64")
+                    parameter = ui.input("RF parameters (SF,BW,CR,preamble)", value="9,7,1,12").classes("w-64")
+
+            def on_mode_change(e):
+                val = e.value
+                if val.startswith("LoRa · Pico USB UART0") or val.startswith("LoRa · ground Pico"):
+                    if port.value in ("/dev/ttyUSB0", ""):
+                        port.set_value("/dev/ttyACM0")
+                elif val.startswith("LoRa · direct USB UART"):
+                    if port.value in ("/dev/ttyACM0", ""):
+                        port.set_value("/dev/ttyUSB0")
+            mode.on_value_change(on_mode_change)
 
         with ui.row().classes("w-full flex-wrap items-stretch"):
             with ui.card().classes("grow basis-80 min-w-0"):
@@ -319,8 +351,11 @@ def build_ui(ui):
                 connect_btn.set_enabled(not connected)
                 disconnect_btn.set_enabled(connected)
                 ping_btn.set_enabled(connected)
-                modem_health_btn.set_enabled(connected and callable(
-                    getattr(STATE.transport, "check_health", None)))
+                is_lora = mode.value.startswith("LoRa · Pico USB UART0") or mode.value.startswith("LoRa · direct USB UART")
+                modem_health_btn.set_enabled(
+                    (connected and callable(getattr(STATE.transport, "check_health", None)))
+                    or (not connected and is_lora)
+                )
                 read_imu_btn.set_enabled(connected)
                 read_board_imu_btn.set_enabled(connected)
                 stop_btn.set_enabled(connected)
@@ -434,7 +469,20 @@ def build_ui(ui):
         connect_btn.on_click(connect_selected)
         disconnect_btn.on_click(lambda: _call_background(_disconnect))
         ping_btn.on_click(lambda: _call_background(_client_action, "ping_all"))
-        modem_health_btn.on_click(lambda: _call_background(_check_modem_health))
+        def check_modem_health_action():
+            settings = None
+            if mode.value.startswith("LoRa · Pico USB UART0") or mode.value.startswith("LoRa · direct USB UART"):
+                try:
+                    settings = {"local_address": int(local_address.value),
+                                "peer_address": int(peer_address.value),
+                                "network_id": int(network_id.value),
+                                "band_hz": int(band_hz.value) if str(band_hz.value).strip() else None,
+                                "parameter": str(parameter.value).strip()}
+                except (TypeError, ValueError):
+                    pass
+            _call_background(_check_modem_health, port.value, baud.value, settings)
+
+        modem_health_btn.on_click(check_modem_health_action)
         read_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "direct"))
         read_board_imu_btn.on_click(lambda: _call_background(_client_action, "request_imu", "board"))
         absolute_btn.on_click(lambda: _call_background(_client_action, "set_absolute_angle",

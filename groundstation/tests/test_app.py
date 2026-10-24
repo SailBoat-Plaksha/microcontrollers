@@ -126,6 +126,26 @@ class AppImportTests(unittest.TestCase):
         self.assertIn("LoRa modem health OK", state.detail)
         self.assertIn("915000000", state.detail)
 
+    def test_modem_health_standalone_check_when_disconnected(self):
+        class FakeState:
+            lock = __import__("threading").RLock()
+            connected = False
+            transport = None
+            detail = ""
+            def enqueue(self, event): self.event = event
+        state = FakeState()
+        mock_report = {"healthy": True, "checks": {}, "responses": {
+            "address": "+ADDRESS=2", "network_id": "+NETWORKID=18",
+            "band_hz": "+BAND=915000000", "parameter": "+PARAMETER=9,7,1,12",
+            "version": "+VER=RYLR998_V1.0", "uid": "+UID=0123456789AB"}}
+        with patch.object(app, "STATE", state):
+            with patch("groundstation.modem_check.verify_modem", return_value=mock_report) as mock_verify:
+                report = app._check_modem_health(port="/dev/ttyACM0", baud=115200,
+                                                 radio_settings={"parameter": "9,7,1,12"})
+                self.assertTrue(report["healthy"])
+                self.assertIn("LoRa modem health OK", state.detail)
+                self.assertEqual(mock_verify.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
