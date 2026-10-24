@@ -1,21 +1,62 @@
 # Shared-bus sensor request contract
 
-Pi remains the only I2C controller. Ground LoRa -> Pi UART1 -> shared I2C. Motor 0x08/component154, optional comms 0x09/158, sensor Pico 0x0A/159, LSM9DS1 AG 0x6A or0x6B and magnetometer0x1C or0x1E. Sensor Pico defaults GP0 SDA/GP1 SCL; schematic image has no GPIO labels, so these are configurable defaults, not verified board wiring.
+The Pi is the only I2C controller. It receives ground requests over LoRa/UART1, reads sensor registers, polls MCU mailboxes, and forwards data between addressed devices. A slave requests data by placing a MAVLink request in its outgoing mailbox; it never starts an I2C transfer.
 
-The new XML messages are authoritative: IMU_REQUEST200011 CRC71 (27-byte maximum frame), IMU_SAMPLE200012 CRC32 (63-byte maximum frame). Existing messages unchanged. Each Pico transfer remains64 bytes zero-padded. Sixteen messages supported after this addition.
+## Addresses and identities
 
-IMU_REQUEST fields: ground_session uint32, request_id uint32, timeout_ms uint16(1..5000), max_age_ms uint16(default0 meansnewread), path uint8(0direct,1sensorPico), target_system uint8, target_component uint8. Ground source255/190 targetsPi1/1. Same session+request duplicate must not cause another sensor acquisition. Bound and expire outstanding requests and cache. Sensor requests use an independent sequence/tracker so they cannot affect actuator request ordering.
+| Device | I2C address | MAVLink system/component |
+| --- | --- | --- |
+| Pi controller | None | 1/1 |
+| Motor Pico | 0x08 | 1/154 |
+| Optional comms Pico | 0x09 | 1/158 |
+| Sensor Pico | 0x0A | 1/159 |
+| LSM9DS1 accel/gyro | 0x6A or 0x6B | None; Pi reads registers |
+| LSM9DS1 magnetometer | 0x1C or 0x1E | None; Pi reads registers |
+| Ground client | None | 255/190 |
 
-IMU_SAMPLE fields: ground_session/request_id/time_boot_ms/sample_seq/acquisition_boot_id/source_boot_id(alluint32), sample_age_ms/valid_fields(uint16), xacc/yacc/zacc/xgyro/ygyro/zgyro/xmag/ymag/zmag(int16), status/path/acquisition_component/target_system/target_component(uint8). Units mg acceleration, mrad/s angular rate, milligauss magnetic field. valid_fields bits1/2/4; temperature not included. NonOK hasvalid_fields0. Status1OK2NOT_READY3UNAVAILABLE4TIMEOUT5REJECTED. Acquisition_component alwaysPi1. Pi owns timestamp/sample_seq/acquisition_boot_id. Source boot belongs emittingnode. Timestamp Pi-relative monotonic milliseconds, age saturated65535; sample_seq increments onlynew successfulacquisitions. Partialfreshfields allowedandexplicitmask, neverfalselyreuseunreadyaxes. Client matches pendingkey, path, source(1/1director1/159board), target255/190, acquisitionowner1, bootvalidity, deadlineanddedup. Late/unsolicitedresponses do notsatisfynewrequests;errorscleardisplayedvalidity.
+Sensor Pico defaults to GP0 SDA / GP1 SCL. The schematic image does not label GPIOs, so these are configurable defaults. Sixteen MAVLink messages are now supported. Every MCU mailbox transfer remains 64 bytes, carrying one unsigned frame padded with zeros.
 
-Direct path: Ground IMU_REQUEST path0 -> Pi low-priority sensor job -> driver freshread -> IMU_SAMPLE source1/1 target255/190; onlyPi performsregister I/O. Errors producecorrelatedstatus, not fabricatedvalues.
+## Messages
 
-Board path: Ground request path1 targetPi -> Pi forwardsIMU_REQUEST source1/1 target1/159 via0x0A -> Pico queues dependency IMU_REQUEST source1/159 target1/1 path0 keepingcorrelation -> Pi pollsdependency, readsLSM9DS1, writesIMU_SAMPLE source1/1 target1/159 via0x0A -> Pico validates/normalizesinvalidfields andreturnsIMU_SAMPLE source1/159 target255/190 path1, source_boot_id own and acquisitionownerPi -> Pi validatespendingboardcorrelationandforwardsradio. Pico mayanswercacheonlywhenmax_age_ms>0 andfresh. max_age_ms0 alwaysneedsnewPi read. Board-local dependency session0 isreservedforPico;replymusttargetPicoandnotleakgroundresponse. Oneboundedpendingtable andtimeouts protectthisroute. No slaveinitiatesphysicalbusI/O.
+The XML in `protocol/arsem.xml` is authoritative. Generated CRC extras are 71 for `IMU_REQUEST` (200011) and 32 for `IMU_SAMPLE` (200012). Their maximum frame lengths are 27 and 63 bytes.
 
-Sensor mailbox firmware onlyusesperipheralI2C. ISR copiesorservespreparedbytes; mainloopparsesandprocesses. Retainpreparedrepliesforshortreads;advanceafter64bytes, pad0onoverread. Queueoverflow/dropstatevisible. Pico handlesheartbeat, NODE_HEALTH andbroadcastPING; samplevalidityexpiresandclearswhenstale. No sensoracquisitionfromPico, nocontrollerhandoff, noautonomoussecondbus.
+`IMU_REQUEST` carries a ground session and request ID, a timeout of 1–5000 ms, maximum cached age, path, and recipient. Path 0 selects a direct Pi read; path 1 selects the sensor Pico response. A maximum age of zero requires a new sensor read. Session zero is reserved for requests generated locally by the sensor Pico. Sensor and motor request counters and trackers are independent.
 
-Onboard config: add optional [lsm9ds1] enabled/ag_address/mag_address and optional [sensor] enabled/address/component settings. Defaultbothdisabled preservesoldgenericIMU/tests. GenericIMU andLSM9DS1 mutuallyexclusive. DirectLSM workswithoutPico. Directradio mode stilldisablescomms0x09, notsensor0x0A. Pollsensorfairlywithmotor. RequestsqueuedbelowSTOPandmotor, deadlinesbounded, no sleepswaitingconversions. Addwrite_registers tobusadapters. The LSM driverAPI is onboard.lsm9ds1.LSM9DS1(bus,ag_address=...,mag_address=...,clock=...), initialize(), read_sample()->LSM9DS1Sample(accel_mg,gyro_mrad_s,mag_mgauss,valid_fields,acquired_at). SensorNotReady isretryableuntildeadline;notvalidzeros. Initialization/readerrorsinvalidatestateandreturnexplicitUNAVAILABLE.
+`IMU_SAMPLE` carries the correlation IDs, acquisition timestamp, sample sequence, acquisition and reporting boot identities, sample age, validity mask, nine signed axis readings, result, path, acquisition owner, and recipient. Units are mg for acceleration, mrad/s for angular rate, and milligauss for magnetic field. Validity bits are acceleration 1, gyroscope 2, and magnetometer 4. Temperature is not included. Invalid axes are zero and must not be interpreted as measurements.
 
-Client API: BoatClient.request_imu(path="direct"|"board", *, timeout_ms=1000, max_age_ms=0)->RequestTicket, independentIMUrequestcounter. Add ImuReading typedrecord carryingallwiredata and source. ExistingImuSample unchangedforoldstreamcompatibility. UI/CLI useImuReading fortwobuttons andall9axes, explicitstatus,requestid,source,owner,age,validity. Existingmotorcontrolsunchanged. Simulationmustlabelgeneratedreadings andsupporttwopaths. CLI `imu [direct|board]`.
+Status values are 1 OK, 2 NOT_READY, 3 UNAVAILABLE, 4 TIMEOUT, and 5 REJECTED. A non-OK response has validity zero. Partial fresh samples are allowed and explicitly identified by their validity mask.
 
-No motor/RC/watchdog firmware edits. No physicaltestsorflashingwithoutactualhardwareevidence.
+The acquisition component is always Pi component 1. Acquisition time uses the Pi's boot-relative monotonic clock; `acquisition_boot_id` identifies that clock. The reporting node supplies `source_boot_id`. Sample sequence increments only after a new successful acquisition. Age saturates at 65535 ms. A Pico response preserves the Pi acquisition fields and adds time spent in its cache; it does not claim to have read the IMU.
+
+## Direct path
+
+1. Ground sends `IMU_REQUEST`, path 0, to Pi 1/1.
+2. The Pi schedules the sensor below STOP and motor traffic, reads the LSM9DS1, and returns `IMU_SAMPLE` to ground.
+3. Sensor errors produce a correlated failure with invalid measurements. A conversion that is not ready can be retried within the request deadline without sleeping in the scheduler.
+
+## Pico path and data brokering
+
+1. Ground sends a path-1 request to the Pi.
+2. Pi writes the request to the sensor Pico at 0x0A, using source 1/1 and target 1/159.
+3. When a new reading is required, the Pico queues a path-0 dependency request to Pi 1/1 with the same correlation IDs.
+4. Pi polls that mailbox, validates the dependency against its pending request, reads the IMU, then writes an `IMU_SAMPLE` addressed to the Pico.
+5. The Pico validates the supplied sample, clears invalid axes, and queues a path-1 response addressed to ground. Its reporting boot ID is its own; the acquisition owner remains Pi.
+6. Pi polls and validates the response, then transmits it to ground.
+
+The Pico may answer from cache only when a nonzero maximum age permits it. A board-local session-zero dependency is answered only to that Pico and must not create an unsolicited ground reply. This implements the same broker pattern other MCU data consumers can use; it does not make the IMU understand MAVLink.
+
+## Validation and scheduling
+
+Bound and expire request tables, queues and response caches. An exact duplicate must not trigger another acquisition; an altered duplicate must be rejected. Check source, target, path, request correlation, deadlines, age, and boot identity. Late replies cannot satisfy a new request. A Pi-generated broker failure may report a board-path error when the Pico is unavailable; successful board-path readings must come from component 159.
+
+MCU callbacks only transfer bytes; parsing and processing run in the main loop. Prepared replies survive short reads and write-only transactions, advance after a complete 64-byte read, and return zeros for over-reads. Queue pressure and sample expiry are visible through health/counters. Sensor traffic must leave motor polling and STOP responsive.
+
+## Configuration and software API
+
+Add optional `[lsm9ds1]` settings `enabled`, `ag_address`, and `mag_address`, and `[sensor]` settings `enabled`, `address`, and `component`. Both default to disabled. The legacy generic IMU reader and LSM9DS1 reader are mutually exclusive. Direct LSM9DS1 access works without a Pico. Direct-radio mode still disables comms address 0x09, but leaves the separately configured sensor node enabled.
+
+The driver is `onboard.lsm9ds1.LSM9DS1(bus, ag_address=..., mag_address=..., clock=...)`. It exposes `initialize()` and `read_sample()`. Samples contain acceleration, gyroscope and magnetometer tuples, validity, and acquisition time. `SensorNotReady` is retryable within a deadline. The bus supplies `read_registers()` and `write_registers()`.
+
+`BoatClient.request_imu(path="direct" | "board", timeout_ms=1000, max_age_ms=0)` returns a request ticket. A separate typed `ImuReading` event contains the full response; the older streamed `ImuSample` record remains compatible. GUI and CLI show all nine axes, units, status, correlation, reporting source, acquisition owner, age and validity. CLI syntax is `imu [direct|board]`. Generated simulation samples stay labeled.
+
+This addition must not edit motor, RC or watchdog firmware. Host tests and firmware builds do not establish physical I2C, IMU or radio operation.
