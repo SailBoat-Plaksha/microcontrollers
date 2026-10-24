@@ -6,6 +6,7 @@ import threading
 import time
 
 from boat.client import BoatClient, MotorReport, NodeHealthReport, RequestOutcome
+from boat.radio import LoRaModemTransport
 from .transports import SerialTransport, SimulationTransport, SSHTransport
 
 
@@ -22,19 +23,38 @@ def parse_step(parts, default_step):
     return delta, actuator
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Boat raw-MAVLink ground station CLI")
+def build_parser():
+    parser = argparse.ArgumentParser(description="Boat ground station CLI")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--simulate", action="store_true", help="use conspicuously labeled simulation")
     group.add_argument("--serial", metavar="PORT", help="ground Pico USB serial port (LoRa gateway)")
+    group.add_argument("--lora", metavar="PORT", help="direct RYLR998 USB-UART modem port")
     group.add_argument("--ssh", metavar="HOST_ALIAS", help="SSH config alias for the Pi")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--step-deg", type=float, default=5.0)
+    parser.add_argument("--local-address", type=int, default=2)
+    parser.add_argument("--peer-address", type=int, default=1)
+    parser.add_argument("--network-id", type=int, default=18)
+    parser.add_argument("--band-hz", type=int, default=None,
+                        help="optional modem frequency in Hz; omitted leaves its current band")
+    parser.add_argument("--parameter", default="10,7,1,12", metavar="SF,BW,CR,PREAMBLE")
+    return parser
+
+
+def make_transport(args):
+    return (SimulationTransport() if args.simulate else
+            LoRaModemTransport(args.lora, args.baud, local_address=args.local_address,
+                peer_address=args.peer_address, network_id=args.network_id,
+                band_hz=args.band_hz, parameter=args.parameter) if args.lora else
+            SerialTransport(args.serial, args.baud) if args.serial else SSHTransport(args.ssh))
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if not 0.01 <= args.step_deg <= 327.67:
         parser.error("--step-deg must fit the signed centidegree request field (0.01..327.67)")
-    transport = (SimulationTransport() if args.simulate else
-                 SerialTransport(args.serial, args.baud) if args.serial else SSHTransport(args.ssh))
+    transport = make_transport(args)
     client = BoatClient(transport)
     events = []
     event_lock = threading.Lock()
@@ -84,6 +104,8 @@ def main():
         print(f"Connected: {transport.name}")
         if args.simulate:
             print("SIMULATION MODE: all sensor and motor values are generated")
+        elif args.lora:
+            print("Direct RYLR998 mode: +OK confirms modem acceptance; motor outcomes come from Pi/MAVLink.")
         print("Commands: absolute <degrees> [actuator 1|2], step [degrees [actuator 1|2]], stop [actuator 1|2], ping, status, quit")
         while True:
             try:
