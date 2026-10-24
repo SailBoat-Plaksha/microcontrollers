@@ -14,14 +14,19 @@ from protocol import codec
 
 from .bus import I2CBus
 from .config import ServiceConfig
+from .lsm9ds1 import LSM9DS1, LSM9DS1Error, SensorNotReady
 
 ALLOWED_MESSAGES = {
     "HEARTBEAT", "PING", "SCALED_IMU", "NODE_INFO", "ACTUATOR_STATUS",
     "CONTROL_AUTHORITY", "LINK_STATUS", "ACTUATOR_REQUEST", "NODE_HEALTH",
-    "REQUEST_RESULT", "ENVIRONMENTAL_SAMPLE", "POWER_STATE",
+    "REQUEST_RESULT", "ENVIRONMENTAL_SAMPLE", "POWER_STATE", "IMU_REQUEST", "IMU_SAMPLE",
 }
 IMU_SAMPLE_MAX_AGE_SECONDS = 5.0
 TERMINAL_STATES = {4, 5, 6}
+
+
+def _round_axis(value: float) -> int:
+    return int(value + 0.5) if value >= 0 else int(value - 0.5)
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,24 @@ class _Write:
     key: tuple[int, int, int, int] | None = None
     queued_at: float = 0.0
     motion: bool = False
+
+
+@dataclass
+class _IMUPending:
+    key: tuple[int, int, int, int]
+    fields: dict[str, int]
+    route: str
+    created: float
+    deadline: float
+    fingerprint: tuple[int, ...]
+    board_dependency: bool = False
+    initialized: bool = False
+    dependency_fields: dict[str, int] | None = None
+    dependency_last_fields: dict[str, int] | None = None
+    dependency_frame: bytes | None = None
+    dependency_completed_at: float = 0.0
+    dependency_request_id: int | None = None
+    last_error: bool = False
 
 
 class BoatRouter:
@@ -66,6 +89,10 @@ class BoatRouter:
             self._poll_addresses.append(self.config.comms_address)
         if self.config.imu:
             self._poll_addresses.append(self.config.imu.address)
+        if self.config.sensor_enabled:
+            self._poll_addresses.append(self.config.sensor_address)
+        if self.config.lsm9ds1_enabled:
+            self._poll_addresses.append(-1)  # a fair, low-priority on-demand sensor slot
         self._poll_index = 0
         self._consecutive_writes = 0
         self._sessions: dict[tuple[int, int], int] = {}
@@ -92,6 +119,17 @@ class BoatRouter:
         self._last_imu_poll = float("-inf")
         self._last_heartbeat = self._boot_at
         self._last_health = self._boot_at
+        self._imu_pending: dict[tuple[int, int, int, int], _IMUPending] = {}
+        self._imu_outcomes: dict[tuple[int, int, int, int], tuple[tuple[int, ...], bytes, float]] = {}
+        self._imu_highest: dict[tuple[int, int, int], int] = {}
+        self._imu_sessions: dict[tuple[int, int], int] = {}
+        self._sensor_dependency_highest = 0
+        self._imu_retired: deque[tuple[int, int, int]] = deque(maxlen=64)
+        self._imu_samples = 0
+        self._imu_job_cursor = 0
+        self._lsm = (LSM9DS1(bus, ag_address=self.config.lsm9ds1_ag_address,
+                             mag_address=self.config.lsm9ds1_mag_address, clock=self.clock)
+                     if self.config.lsm9ds1_enabled else None)
 
     @property
     def queued_writes(self) -> int:
@@ -125,6 +163,8 @@ class BoatRouter:
         name, fields = message["name"], message["fields"]
         if name == "ACTUATOR_REQUEST":
             return self._accept_request(frame, fields, ingress)
+        if name == "IMU_REQUEST":
+            return self._accept_imu_request(frame, fields, ingress)
         if name == "PING":
             if (fields["target_system"], fields["target_component"]) == (0, 0):
                 self._queue_ping_reply(message, ingress)
@@ -138,8 +178,9 @@ class BoatRouter:
         return False
 
     def step(self) -> bool:
-        """Perform at most one bus operation; safe to drive with an injected clock."""
+        """Perform one fair scheduler action; sensor actions use bounded register transfers."""
         now = self.clock()
+        self._expire_imu_requests(now)
         # Expiry is a local state transition, not a bus failure. Keep the last
         # observation and its timestamp for diagnostics while withdrawing its
         # validity before any periodic health response can be emitted.
@@ -150,6 +191,8 @@ class BoatRouter:
         addresses = [self.config.motor_address]
         if self.config.comms_enabled:
             addresses.append(self.config.comms_address)
+        if self.config.sensor_enabled:
+            addresses.append(self.config.sensor_address)
         for address in addresses:
             identity = self._node_for_address(address)
             seen = self.node_last_seen.get(identity)
@@ -164,6 +207,10 @@ class BoatRouter:
         self._consecutive_writes = 0
         address = self._poll_addresses[self._poll_index]
         self._poll_index = (self._poll_index + 1) % len(self._poll_addresses)
+        if address == -1:
+            return self._service_imu_job()
+        if address == self.config.sensor_address and self.config.sensor_enabled:
+            return self._poll_sensor_node()
         if self.config.imu and address == self.config.imu.address:
             now = self.clock()
             interval = self.config.imu.interval_ms / 1000.0
@@ -203,6 +250,276 @@ class BoatRouter:
                     kept.append(item)
             pending_queue.extend(kept)
         return removed
+
+    def _accept_imu_request(self, original: bytes, fields: dict[str, int], ingress: str) -> bool:
+        self._prune_imu_ledgers()
+        message = codec.decode(original)
+        source = (message["system"], message["component"])
+        board_local = source == (ids.SYSTEM_BOAT, self.config.sensor_component)
+        target = (fields["target_system"], fields["target_component"])
+        if board_local:
+            if (not self.config.sensor_enabled or fields["ground_session"] != 0 or
+                    fields["request_id"] == 0 or target != (1, 1) or fields["path"] != 0):
+                self._event("rejected", "invalid sensor Pico dependency request", original, source)
+                return False
+            parent = next((p for p in self._imu_pending.values()
+                           if p.board_dependency and p.dependency_request_id == fields["request_id"]), None)
+            is_new_dependency = parent is None
+            if is_new_dependency:
+                candidates = [p for p in self._imu_pending.values()
+                              if p.board_dependency and p.dependency_request_id is None and
+                              p.dependency_fields is None and p.deadline > self.clock()]
+                if len(candidates) == 1:
+                    parent = candidates[0]
+            if parent is None or parent.deadline <= self.clock():
+                self._event("rejected", "sensor dependency has no live board request", original, source)
+                return False
+            if fields["timeout_ms"] < 1 or fields["timeout_ms"] > 5000:
+                return False
+            if is_new_dependency and fields["request_id"] <= self._sensor_dependency_highest:
+                self._event("rejected", "reordered sensor-local dependency request", original, source)
+                return False
+            if is_new_dependency:
+                self._sensor_dependency_highest = fields["request_id"]
+                parent.dependency_request_id = fields["request_id"]
+            return self._service_sensor_dependency(fields, parent)
+        if source != (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND):
+            self._event("rejected", "IMU request source is invalid", original, source)
+            return False
+        if ingress not in ("ssh", "radio", "comms"):
+            return False
+        if ingress == "comms" and not self.config.comms_enabled:
+            return False
+        if target != (1, 1):
+            if fields["ground_session"] and fields["request_id"]:
+                self._emit_imu_error(fields, ingress, 5, "IMU request target must be Pi 1/1")
+            else:
+                self._event("rejected", "IMU request target is invalid", original, source)
+            return False
+        if fields["ground_session"] == 0 or fields["request_id"] == 0 or not (1 <= fields["timeout_ms"] <= 5000) or fields["path"] not in (0, 1):
+            if fields["ground_session"] and fields["request_id"]:
+                self._emit_imu_error(fields, ingress, 5, "invalid IMU request bounds or path")
+            self._event("rejected", "invalid IMU request bounds or path", original)
+            return False
+        if fields["path"] == 0 and not (self.config.lsm9ds1_enabled or self.config.imu):
+            self._emit_imu_error(fields, ingress, 3, "direct IMU is unavailable")
+            return True
+        if fields["path"] == 1 and not (self.config.sensor_enabled and self.config.lsm9ds1_enabled):
+            self._emit_imu_error(fields, ingress, 3, "sensor Pico is unavailable")
+            return True
+        session_key = (*source, fields["ground_session"])
+        key = (*session_key, fields["request_id"])
+        fingerprint = tuple(fields[k] for k in ("ground_session", "request_id", "timeout_ms", "max_age_ms", "path", "target_system", "target_component"))
+        saved = self._imu_outcomes.get(key)
+        if saved and saved[2] > self.clock():
+            if saved[0] == fingerprint:
+                self._route_imu(self._refresh_cached_imu(saved[1], saved[2] - 30.0), ingress)
+            else:
+                self._route_imu(self._imu_frame(fields, 5, 0, (0,) * 9, 0, ingress), ingress)
+            return True
+        existing = self._imu_pending.get(key)
+        if existing:
+            if existing.fingerprint != fingerprint:
+                self._route_imu(self._imu_frame(fields, 5, 0, (0,) * 9, 0, ingress), ingress)
+            return True
+        if session_key in self._imu_retired:
+            self._emit_imu_error(fields, ingress, 5, "request belongs to a retired IMU session")
+            return True
+        current_session = self._imu_sessions.get(source)
+        if current_session is not None and current_session != fields["ground_session"]:
+            self._imu_retired.append((*source, current_session))
+            for old_key, old_pending in list(self._imu_pending.items()):
+                if old_key[:3] == (*source, current_session):
+                    frame = self._imu_frame(old_pending.fields, 5, 0, (0,) * 9, 0, old_pending.route)
+                    self._finish_imu(old_pending, frame, old_pending.route)
+            self._imu_highest.pop((*source, current_session), None)
+        self._imu_sessions[source] = fields["ground_session"]
+        previous = self._imu_highest.get(session_key, 0)
+        if fields["request_id"] <= previous:
+            self._emit_imu_error(fields, ingress, 5, "reordered IMU request ID rejected")
+            return True
+        if len(self._imu_pending) >= min(32, max(4, self.config.queue_limit // 2)):
+            self._emit_imu_error(fields, ingress, 4, "bounded IMU request queue is full")
+            return True
+        self._imu_highest[session_key] = fields["request_id"]
+        pending = _IMUPending(key, dict(fields), ingress, self.clock(),
+                               self.clock() + fields["timeout_ms"] / 1000.0,
+                               fingerprint, fields["path"] == 1)
+        pending.fields["target_system"], pending.fields["target_component"] = (
+            ids.SYSTEM_GROUND, ids.COMPONENT_GROUND)
+        self._imu_pending[key] = pending
+        if pending.board_dependency:
+            forwarded_fields = dict(fields)
+            forwarded_fields["target_component"] = self.config.sensor_component
+            forwarded = codec.encode("IMU_REQUEST", forwarded_fields, system=1, component=1,
+                                     sequence=self._next_sequence())
+            if not self._queue(forwarded, self.config.sensor_address, 2, key):
+                self._finish_imu(pending, self._imu_frame(pending.fields, 4, 0, (0,) * 9, 0, ingress), ingress)
+        self._event("imu_request", "accepted board IMU request" if pending.board_dependency else "accepted direct IMU request", original, source)
+        return True
+
+    def _prune_imu_ledgers(self) -> None:
+        now = self.clock()
+        for key, (_, _, expiry) in list(self._imu_outcomes.items()):
+            if expiry <= now:
+                self._imu_outcomes.pop(key, None)
+        limit = max(16, min(128, self.config.queue_limit * 2))
+        while len(self._imu_outcomes) >= limit:
+            key = min(self._imu_outcomes, key=lambda item: self._imu_outcomes[item][2])
+            self._imu_outcomes.pop(key, None)
+
+    def _service_imu_job(self) -> bool:
+        eligible = [pending for pending in self._imu_pending.values()
+                    if not pending.board_dependency or pending.dependency_fields is not None]
+        if eligible:
+            pending = eligible[self._imu_job_cursor % len(eligible)]
+            self._imu_job_cursor = (self._imu_job_cursor + 1) % max(1, len(eligible))
+            if pending.board_dependency:
+                return self._read_sensor_dependency(pending)
+            return self._read_lsm(pending)
+        return False
+
+    def _expire_imu_requests(self, now: float) -> None:
+        for pending in list(self._imu_pending.values()):
+            if pending.deadline <= now:
+                status = 3 if pending.last_error else 4
+                frame = self._imu_frame(pending.fields, status, 0, (0,) * 9, 0, pending.route)
+                self._finish_imu(pending, frame, pending.route)
+
+    def _read_lsm(self, pending: _IMUPending) -> bool:
+        if self._lsm is None:
+            self._emit_imu_error(pending.fields, pending.route, 3, "configured direct sensor unavailable")
+            self._imu_pending.pop(pending.key, None)
+            return False
+        try:
+            if not pending.initialized:
+                self._lsm.initialize()
+                pending.initialized = True
+            sample = self._lsm.read_sample()
+            fields = sample.valid_fields
+            axes = tuple(_round_axis(v) for v in (*sample.accel_mg, *sample.gyro_mrad_s, *sample.mag_mgauss))
+            if any(v < -32768 or v > 32767 for v in axes):
+                raise ValueError("scaled IMU axis exceeds int16 range")
+            self._imu_samples = (self._imu_samples + 1) & 0xFFFFFFFF
+            response = self._imu_frame(pending.fields, 1, fields, axes, sample.acquired_at, pending.route)
+            self._finish_imu(pending, response, pending.route)
+            self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False)
+                        else "LSM9DS1 register sample", response, (1, 1))
+            return True
+        except SensorNotReady:
+            return False
+        except (LSM9DS1Error, OSError, ValueError, TypeError, OverflowError) as exc:
+            self._lsm._initialized = False
+            pending.last_error = True
+            self._event("imu_error", f"LSM9DS1 unavailable: {exc}")
+            if self.clock() >= pending.deadline:
+                self._finish_imu(pending, self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, pending.route), pending.route)
+            return False
+
+    def _service_sensor_dependency(self, fields: dict[str, int], parent: _IMUPending) -> bool:
+        if parent.dependency_last_fields is not None:
+            if parent.dependency_last_fields != fields:
+                self._event("rejected", "altered duplicate board-local IMU dependency rejected")
+                return False
+            if parent.dependency_frame is not None:
+                self._queue(self._refresh_cached_imu(parent.dependency_frame,
+                                                     parent.dependency_completed_at),
+                            self.config.sensor_address, 2, parent.key)
+            return True
+        if parent.dependency_fields is not None:
+            if parent.dependency_fields != fields:
+                self._event("rejected", "altered duplicate board-local IMU dependency rejected")
+                return False
+            return True
+        parent.dependency_fields = dict(fields)
+        return True
+
+    def _read_sensor_dependency(self, parent: _IMUPending) -> bool:
+        assert parent.dependency_fields is not None
+        fields = dict(parent.dependency_fields)
+        fields["ground_session"] = 0
+        fields["target_system"], fields["target_component"] = 1, self.config.sensor_component
+        try:
+            if self._lsm is None:
+                raise OSError("LSM9DS1 is disabled")
+            if not parent.initialized:
+                self._lsm.initialize()
+                parent.initialized = True
+            sample = self._lsm.read_sample()
+            axes = tuple(_round_axis(v) for v in (*sample.accel_mg, *sample.gyro_mrad_s, *sample.mag_mgauss))
+            if any(v < -32768 or v > 32767 for v in axes):
+                raise ValueError("scaled IMU axis exceeds int16 range")
+            self._imu_samples = (self._imu_samples + 1) & 0xFFFFFFFF
+            frame = self._imu_frame(fields, 1, sample.valid_fields, axes, sample.acquired_at, "sensor")
+            if self._queue(frame, self.config.sensor_address, 2, parent.key):
+                parent.dependency_last_fields = dict(parent.dependency_fields or {})
+                parent.dependency_frame = frame
+                parent.dependency_completed_at = self.clock()
+                parent.dependency_fields = None
+                self._event("imu_sample", "simulated IMU measurement" if getattr(self.bus, "simulated", False)
+                            else "LSM9DS1 dependency sample", frame, (1, 1))
+            return True
+        except SensorNotReady:
+            return False
+        except (LSM9DS1Error, OSError, ValueError, TypeError, OverflowError):
+            self._lsm._initialized = False
+            parent.last_error = True
+            if self.clock() >= parent.deadline:
+                frame = self._imu_frame(fields, 3, 0, (0,) * 9, 0, "sensor")
+                self._queue(frame, self.config.sensor_address, 2, parent.key)
+                parent.dependency_last_fields = dict(parent.dependency_fields or {})
+                parent.dependency_frame = frame
+                parent.dependency_completed_at = self.clock()
+                parent.dependency_fields = None
+            return False
+
+    def _imu_frame(self, request: dict[str, int], status: int, valid: int,
+                   axes: tuple[int, ...], acquired_at: float, route: str) -> bytes:
+        valid &= 7
+        values = tuple(value if valid & (1 << (index // 3)) else 0 for index, value in enumerate(axes))
+        age = max(0, min(65535, round((self.clock() - acquired_at) * 1000))) if status == 1 else 0
+        return codec.encode("IMU_SAMPLE", {
+            "ground_session": request["ground_session"], "request_id": request["request_id"],
+            "time_boot_ms": max(0, int((acquired_at - self._boot_at) * 1000)) & 0xFFFFFFFF if status == 1 else 0,
+            "sample_seq": self._imu_samples, "acquisition_boot_id": self.boot_id,
+            "source_boot_id": self.boot_id, "sample_age_ms": age, "valid_fields": valid if status == 1 else 0,
+            "xacc": values[0], "yacc": values[1], "zacc": values[2],
+            "xgyro": values[3], "ygyro": values[4], "zgyro": values[5],
+            "xmag": values[6], "ymag": values[7], "zmag": values[8],
+            "status": status, "path": request["path"], "acquisition_component": 1,
+            "target_system": request["target_system"], "target_component": request["target_component"]},
+            system=1, component=1, sequence=self._next_sequence())
+
+    def _emit_imu_error(self, fields: dict[str, int], route: str, status: int, reason: str) -> None:
+        response_fields = dict(fields)
+        if route in ("ssh", "radio", "comms"):
+            response_fields["target_system"], response_fields["target_component"] = (
+                ids.SYSTEM_GROUND, ids.COMPONENT_GROUND)
+        frame = self._imu_frame(response_fields, status, 0, (0,) * 9, 0, route)
+        key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, fields["ground_session"], fields["request_id"])
+        self._imu_outcomes[key] = (tuple(fields[k] for k in ("ground_session", "request_id", "timeout_ms", "max_age_ms", "path", "target_system", "target_component")), frame, self.clock() + 30.0)
+        self._route_imu(frame, route)
+        self._event("imu_error", reason, frame)
+
+    def _finish_imu(self, pending: _IMUPending, frame: bytes, route: str) -> None:
+        self._imu_pending.pop(pending.key, None)
+        self._imu_outcomes[pending.key] = (pending.fingerprint, frame, self.clock() + 30.0)
+        self._route_imu(frame, route)
+
+    def _route_imu(self, frame: bytes, route: str) -> None:
+        if route == "comms" and self.config.comms_enabled:
+            self._queue(frame, self.config.comms_address, 1)
+        else:
+            self.on_frame(frame)
+
+    def _refresh_cached_imu(self, frame: bytes, cached_at: float) -> bytes:
+        message = codec.decode(frame)
+        fields = dict(message["fields"])
+        if fields["status"] == 1:
+            fields["sample_age_ms"] = min(65535, fields["sample_age_ms"] +
+                                           max(0, round((self.clock() - cached_at) * 1000)))
+        return codec.encode("IMU_SAMPLE", fields, system=message["system"],
+                            component=message["component"], sequence=message["sequence"])
 
     def _accept_request(self, original: bytes, fields: dict[str, int], ingress: str) -> bool:
         key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, fields["ground_session"])
@@ -445,7 +762,7 @@ class BoatRouter:
                 except ValueError:
                     message_name = ""
                 if message_name in ("HEARTBEAT", "NODE_HEALTH", "SCALED_IMU",
-                                    "ACTUATOR_STATUS", "LINK_STATUS"):
+                                    "ACTUATOR_STATUS", "LINK_STATUS", "IMU_SAMPLE"):
                     for index, pending in enumerate(self._normal):
                         if pending.address == address:
                             try:
@@ -495,6 +812,9 @@ class BoatRouter:
             suffix = (fields["actuator"],)
         elif name == "LINK_STATUS":
             suffix = (fields["link_type"],)
+        elif name == "IMU_SAMPLE":
+            suffix = (fields["target_system"], fields["target_component"],
+                      fields["ground_session"], fields["request_id"])
         elif name == "REQUEST_RESULT":
             suffix = (fields["ground_session"], fields["request_id"])
         return name, message["system"], message["component"], *suffix
@@ -589,6 +909,41 @@ class BoatRouter:
             return True
         self.node_last_seen[node] = self.clock()
         self.node_present[node] = True
+        if node[1] == self.config.sensor_component and message["name"] == "IMU_REQUEST":
+            return self._accept_imu_request(frame, message["fields"], "sensor")
+        self._observe_node_message(message, frame)
+        return True
+
+    def _poll_sensor_node(self) -> bool:
+        address = self.config.sensor_address
+        node = (ids.SYSTEM_BOAT, self.config.sensor_component)
+        try:
+            mailbox = self.bus.read_mailbox(address)
+            if not isinstance(mailbox, (bytes, bytearray)) or len(mailbox) != ids.MAILBOX_FRAME:
+                raise OSError("sensor mailbox read must return exactly 64 bytes")
+        except (OSError, TypeError, ValueError) as exc:
+            self.bus_errors += 1
+            self.node_present[node] = False
+            self._event("bus_error", f"sensor mailbox read failed: {exc}")
+            return False
+        self.node_ack_at[node] = self.clock()
+        if not any(mailbox):
+            self._event("poll", "empty sensor mailbox")
+            return True
+        try:
+            frame = self._decode_mailbox(mailbox)
+            message = codec.decode(frame)
+        except (ValueError, TypeError, struct.error) as exc:
+            self.bus_errors += 1
+            self._event("rejected", f"invalid sensor mailbox: {exc}")
+            return False
+        if (message["system"], message["component"]) != node:
+            self._event("rejected", "sensor mailbox source does not match component 159", frame)
+            return False
+        self.node_last_seen[node] = self.clock()
+        self.node_present[node] = True
+        if message["name"] == "IMU_REQUEST":
+            return self._accept_imu_request(frame, message["fields"], "sensor")
         self._observe_node_message(message, frame)
         return True
 
@@ -603,7 +958,7 @@ class BoatRouter:
         if name == "NODE_HEALTH":
             prior = self.node_boot_ids.get(source)
             boot = fields["boot_id"]
-            if prior is not None and prior != boot:
+            if prior is not None and prior != boot and source[1] == self.config.motor_component:
                 self._unknown_pending_for_boot(source, "motor boot changed; prior request outcome unknown", prior)
                 self.motor_reconcile_required = True
                 self._motor_reference_seen = False
@@ -613,6 +968,12 @@ class BoatRouter:
                 if active is not None:
                     self._retired_sessions.append((ids.SYSTEM_GROUND, ids.COMPONENT_GROUND, active))
                     self._event("session", "motor boot changed; ground session retired and must reconnect")
+            elif prior is not None and prior != boot and source[1] == self.config.sensor_component:
+                self._sensor_dependency_highest = 0
+                for pending in list(self._imu_pending.values()):
+                    if pending.board_dependency:
+                        frame = self._imu_frame(pending.fields, 3, 0, (0,) * 9, 0, pending.route)
+                        self._finish_imu(pending, frame, pending.route)
             self.node_boot_ids[source] = boot
             self.node_health[source] = (now, boot, fields["feedback_valid"], fields["fault_flags"])
         elif name == "ACTUATOR_STATUS" and source[1] == self.config.motor_component:
@@ -623,6 +984,31 @@ class BoatRouter:
             health = self.node_health.get(source)
             if health is not None and now - health[0] <= 5.0:
                 self.motor_reconcile_required = False
+        elif name == "IMU_SAMPLE" and source == (1, self.config.sensor_component):
+            request_key = (ids.SYSTEM_GROUND, ids.COMPONENT_GROUND,
+                           fields["ground_session"], fields["request_id"])
+            pending = self._imu_pending.get(request_key)
+            if (pending is None or not pending.board_dependency or pending.deadline <= now or
+                    fields["path"] != 1 or fields["target_system"] != ids.SYSTEM_GROUND or
+                    fields["target_component"] != ids.COMPONENT_GROUND or
+                    fields["acquisition_component"] != 1 or
+                    fields["acquisition_boot_id"] != self.boot_id or
+                    fields["source_boot_id"] == 0 or
+                    (self.node_boot_ids.get(source) is not None and
+                     fields["source_boot_id"] != self.node_boot_ids[source]) or
+                    fields["valid_fields"] & ~7 or not 1 <= fields["status"] <= 5 or
+                    (fields["status"] == 1 and fields["valid_fields"] == 0) or
+                    (fields["status"] != 1 and fields["valid_fields"] != 0) or
+                    (pending.fields["max_age_ms"] and fields["sample_age_ms"] > pending.fields["max_age_ms"]) or
+                    any(fields[name] for bit, names in ((1, ("xacc", "yacc", "zacc")),
+                            (2, ("xgyro", "ygyro", "zgyro")), (4, ("xmag", "ymag", "zmag")))
+                        if not fields["valid_fields"] & bit for name in names)):
+                self._event("rejected", "unsolicited or invalid sensor Pico IMU response", frame, source)
+                return
+            self._finish_imu(pending, frame, pending.route)
+            self.snapshots.setdefault(source, {})[name] = bytes(frame)
+            self._event("imu_sample", "validated IMU sample returned through sensor Pico", frame, source)
+            return
         elif name == "REQUEST_RESULT":
             if source != (ids.SYSTEM_BOAT, self.config.motor_component):
                 self._event("rejected", "REQUEST_RESULT source is not the configured motor", frame, source)
@@ -774,7 +1160,10 @@ class BoatRouter:
             self.on_frame(frame)
 
     def _node_for_address(self, address: int) -> tuple[int, int]:
-        component = self.config.motor_component if address == self.config.motor_address else self.config.comms_component
+        if address == self.config.sensor_address:
+            component = self.config.sensor_component
+        else:
+            component = self.config.motor_component if address == self.config.motor_address else self.config.comms_component
         return ids.SYSTEM_BOAT, component
 
     @staticmethod

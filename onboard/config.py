@@ -7,7 +7,8 @@ import math
 import tomllib
 from pathlib import Path
 
-from boat.ids import BUS_HZ, COMPONENT_COMMS_SENSOR, COMPONENT_MOTOR
+from boat.ids import (BUS_HZ, COMPONENT_COMMS_SENSOR, COMPONENT_MOTOR,
+                      COMPONENT_SENSOR, I2C_ADDR_SENSOR)
 
 
 @dataclass(frozen=True)
@@ -51,22 +52,38 @@ class ServiceConfig:
     queue_limit: int = 128
     comms_enabled: bool = True
     imu: IMURegisterConfig | None = None
+    lsm9ds1_enabled: bool = False
+    lsm9ds1_ag_address: int = 0x6B
+    lsm9ds1_mag_address: int = 0x1E
+    sensor_enabled: bool = False
+    sensor_address: int = I2C_ADDR_SENSOR
+    sensor_component: int = COMPONENT_SENSOR
 
     def __post_init__(self) -> None:
         integer_fields = (self.bus_number, self.bus_hz, self.motor_address,
                           self.comms_address, self.motor_component,
-                          self.comms_component, self.poll_interval_ms, self.queue_limit)
+                          self.comms_component, self.poll_interval_ms, self.queue_limit,
+                          self.lsm9ds1_ag_address, self.lsm9ds1_mag_address,
+                          self.sensor_address, self.sensor_component)
         if any(not isinstance(value, int) or isinstance(value, bool) for value in integer_fields):
             raise ValueError("bus, peer and scheduler settings must be integers")
         if not isinstance(self.comms_enabled, bool):
             raise ValueError("comms_enabled must be true or false")
         if self.bus_number < 0 or self.bus_hz != BUS_HZ:
             raise ValueError("bus number must be nonnegative and bus_hz is fixed at 100000")
-        addresses = (self.motor_address, self.comms_address)
+        if any(not isinstance(value, bool) for value in (self.lsm9ds1_enabled, self.sensor_enabled)):
+            raise ValueError("lsm9ds1.enabled and sensor.enabled must be true or false")
+        if self.lsm9ds1_ag_address not in (0x6A, 0x6B) or self.lsm9ds1_mag_address not in (0x1C, 0x1E):
+            raise ValueError("LSM9DS1 addresses must be AG 0x6A/0x6B and mag 0x1C/0x1E")
+        if not 0x03 <= self.sensor_address <= 0x77 or self.sensor_component != COMPONENT_SENSOR:
+            raise ValueError("sensor peer must use a non-reserved address and component 159")
+        if self.imu is not None and self.lsm9ds1_enabled:
+            raise ValueError("generic imu and lsm9ds1 are mutually exclusive")
+        addresses = (self.motor_address, self.comms_address, self.sensor_address)
         if any(not 0x03 <= address <= 0x77 for address in addresses):
             raise ValueError("peer addresses must be non-reserved 7-bit I2C addresses")
-        if len(set(addresses)) != 2:
-            raise ValueError("motor and comms addresses must be distinct")
+        if len(set(addresses)) != len(addresses):
+            raise ValueError("motor, comms and sensor peer addresses must be distinct")
         if (not 1 <= self.motor_component <= 255 or not 1 <= self.comms_component <= 255 or
                 self.motor_component == self.comms_component or
                 ids_component_collision(self.motor_component, self.comms_component)):
@@ -85,7 +102,7 @@ class ServiceConfig:
     def from_toml(cls, path: str | Path) -> "ServiceConfig":
         with Path(path).open("rb") as stream:
             data = tomllib.load(stream)
-        unknown_top_level = set(data) - {"bus", "peers", "scheduler", "service", "imu"}
+        unknown_top_level = set(data) - {"bus", "peers", "scheduler", "service", "imu", "lsm9ds1", "sensor"}
         if unknown_top_level:
             raise ValueError(f"unknown top-level settings: {sorted(unknown_top_level)}")
         bus = _table(data, "bus")
@@ -119,6 +136,16 @@ class ServiceConfig:
                 raise ValueError(f"incomplete imu configuration: {exc}") from exc
         else:
             imu = None
+        lsm = _table(data, "lsm9ds1")
+        sensor = _table(data, "sensor")
+        for table_name, table, allowed in (("lsm9ds1", lsm, {"enabled", "ag_address", "mag_address"}),
+                                           ("sensor", sensor, {"enabled", "address", "component"})):
+            unknown = set(table) - allowed
+            if unknown:
+                raise ValueError(f"unknown {table_name} settings: {sorted(unknown)}")
+        for table_name, table in (("lsm9ds1", lsm), ("sensor", sensor)):
+            if not isinstance(table.get("enabled", False), bool):
+                raise ValueError(f"{table_name}.enabled must be true or false")
         comms_enabled = service.get("comms_enabled", True)
         if not isinstance(comms_enabled, bool):
             raise ValueError("service.comms_enabled must be true or false")
@@ -129,7 +156,13 @@ class ServiceConfig:
                    comms_component=peers.get("comms_component", COMPONENT_COMMS_SENSOR),
                    poll_interval_ms=scheduler.get("poll_interval_ms", 20),
                    queue_limit=scheduler.get("queue_limit", 128),
-                   comms_enabled=comms_enabled, imu=imu)
+                   comms_enabled=comms_enabled, imu=imu,
+                   lsm9ds1_enabled=lsm.get("enabled", False),
+                   lsm9ds1_ag_address=lsm.get("ag_address", 0x6B),
+                   lsm9ds1_mag_address=lsm.get("mag_address", 0x1E),
+                   sensor_enabled=sensor.get("enabled", False),
+                   sensor_address=sensor.get("address", I2C_ADDR_SENSOR),
+                   sensor_component=sensor.get("component", COMPONENT_SENSOR))
 
 
 def _table(data: dict, name: str) -> dict:

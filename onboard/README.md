@@ -59,7 +59,9 @@ The Linux adapter uses `smbus2.i2c_msg` I2C_RDWR transactions. Configure the Pi 
 
 ## Configuration and IMU
 
-`config.example.toml` lists the peer addresses and an optional generic register reader. No sensor model is selected. Leave `[imu].enabled = false` until the actual IMU datasheet supplies its address, starting register, six signed 16-bit value ordering, byte order and scale factors. The generic reader expects acceleration XYZ followed by angular-rate XYZ. It converts the configured counts to mg and mrad/s for `SCALED_IMU`; magnetometer and temperature stay invalid in Pi `NODE_HEALTH`.
+`config.example.toml` lists peer addresses and optional sensor services. The generic `[imu]` reader and `[lsm9ds1]` driver are mutually exclusive. The latter defaults to AG `0x6B` and magnetometer `0x1E`; addresses `0x6A`/`0x1C` are also supported. It uses the onboard `LSM9DS1` driver, which checks both WHO_AM_I values, verifies configuration readbacks, and performs no conversion waits. Keep both drivers disabled until the actual device and wiring are confirmed.
+
+`[sensor]` enables the polled sensor Pico at I2C `0x0A`, MAVLink component 159. Ground clients send `IMU_REQUEST` (message 200011) to Pi 1/1. Path 0 reads the LSM9DS1 directly; path 1 forwards to the sensor Pico, services its session-zero dependency only when polled, then accepts only the matching Pico response. In both paths the Pi remains the sole I2C controller and the `IMU_SAMPLE` (200012) carries the Pi acquisition boot ID, source boot ID, timestamp, age, sequence, status and per-field validity mask. Acceleration is mg, angular rate is mrad/s, and magnetic field is mgauss. `NOT_READY` retries until the request deadline; errors and timeouts return correlated samples with `valid_fields=0`.
 
 Simulation uses the same configured register layout. Its deterministic sample (`0, 0, 1000 mg`, zero angular rate) is a fixture and service logs label every sample as simulated. Simulation does not choose or emulate a specific IMU model.
 
@@ -77,14 +79,14 @@ router = BoatRouter(
     on_event=handle_router_event,
 )
 router.submit_frame(raw_frame, ingress="ssh")  # or ingress="comms"
-router.step()  # at most one serialized bus transaction
+router.step()  # one fair scheduler action; sensor actions use bounded transfers
 ```
 
 `ingress="radio"` uses the same ground source, target, authority, session and
 freshness checks. `ServiceConfig.comms_enabled` defaults to `True` for existing
 serve/SSH deployments; direct-radio mode explicitly disables the comms peer.
 
-`I2CBus` is the injectable protocol: `write_mailbox(address, data)`, `read_mailbox(address)`, `read_registers(address, register, length)`, and `close()`. `SimulatedBus.inject_frame()` supplies deterministic peer mailbox replies, `inject_fault()` injects read/write/IMU failures, and `operations` records bus access for scenario traces. `BoatRouter.snapshots[(system, component)][message_name]` contains the latest received status/health frame; `node_present`, `node_last_seen`, `node_boot_ids`, `node_health`, `imu_valid_fields`, `imu_last_sample` and `imu_error` expose current observations to a later scenario runner or GUI simulation adapter.
+`I2CBus` is the injectable protocol: mailbox read/write, register read/write, and `close()`. `SimulatedBus.inject_frame()` supplies deterministic peer mailbox replies, `register_map` provides writable simulated register banks for WHO_AM_I and configuration readbacks, `inject_fault()` injects read/write/IMU failures, and `operations` records bus access for scenario traces. `BoatRouter.snapshots[(system, component)][message_name]` contains the latest received status/health frame; `node_present`, `node_last_seen`, `node_boot_ids`, `node_health`, `imu_valid_fields`, `imu_last_sample` and `imu_error` expose current observations to a later scenario runner or GUI simulation adapter.
 
 The router validates raw frames with `protocol.codec`, checks exact mailbox padding, allowlists supported messages, enforces ground source `255/190`, movement target `1/154`, and REMOTE_OPERATOR authority `3`. It changes only the MAVLink source IDs to `1/1` when forwarding a movement request. In particular, STEP's signed delta, `request_id` and `ground_session` are not changed or resolved on the Pi; the motor node must resolve STEP once against its fresh valid measured feedback and return `REQUEST_RESULT`.
 
@@ -102,6 +104,7 @@ Run the onboard host checks with:
 
 ```sh
 uv run --extra onboard python -m unittest onboard.test_router -v
+uv run --extra onboard python -m unittest onboard.test_sensor_broker -v
 ```
 
 Tests are deterministic, use `SimulatedBus`, and never open `/dev/i2c-*`, serial devices or hardware.

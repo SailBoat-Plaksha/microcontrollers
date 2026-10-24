@@ -13,6 +13,7 @@ class I2CBus(Protocol):
     def write_mailbox(self, address: int, data: bytes) -> None: ...
     def read_mailbox(self, address: int) -> bytes: ...
     def read_registers(self, address: int, register: int, length: int) -> bytes: ...
+    def write_registers(self, address: int, register: int, data: bytes) -> None: ...
     def close(self) -> None: ...
 
 
@@ -46,6 +47,9 @@ class SMBus2Adapter:
         self._bus.i2c_rdwr(write, read)
         return bytes(read)
 
+    def write_registers(self, address: int, register: int, data: bytes) -> None:
+        self._bus.i2c_rdwr(self._i2c_msg.write(address, bytes((register,)) + bytes(data)))
+
     def close(self) -> None:
         self._bus.close()
 
@@ -63,11 +67,19 @@ class SimulatedBus:
     simulated = True
 
     def __init__(self, *, present: tuple[int, ...] = (0x08, 0x09),
-                 imu_samples: dict[int, bytes] | None = None):
+                 imu_samples: dict[int, bytes] | None = None,
+                 register_map: dict[int, dict[int, bytes | int]] | None = None):
         self.present = set(present)
         self.incoming: dict[int, deque[bytes]] = defaultdict(deque)
         self.snapshots: dict[int, bytes] = {}
         self.imu_samples = dict(imu_samples or {})
+        self.register_map: dict[int, dict[int, int]] = {}
+        for address, registers in (register_map or {}).items():
+            self.register_map[address] = {}
+            for register, value in registers.items():
+                raw = bytes((value,)) if isinstance(value, int) else bytes(value)
+                for offset, byte in enumerate(raw):
+                    self.register_map[address][register + offset] = byte
         self.operations: list[BusOperation] = []
         self.fail_next: dict[str, int] = defaultdict(int)
         self.closed = False
@@ -91,7 +103,7 @@ class SimulatedBus:
         if self.fail_next[operation]:
             self.fail_next[operation] -= 1
             raise OSError(f"simulated {operation} fault at 0x{address:02x}")
-        if address not in self.present and not (operation == "imu" and address in self.imu_samples):
+        if address not in self.present and not (operation == "imu" and (address in self.imu_samples or address in self.register_map)):
             raise OSError(f"no simulated device at 0x{address:02x}")
 
     def write_mailbox(self, address: int, data: bytes) -> None:
@@ -108,11 +120,22 @@ class SimulatedBus:
 
     def read_registers(self, address: int, register: int, length: int) -> bytes:
         self._fault("imu", address)
+        registers = self.register_map.get(address)
+        if registers is not None:
+            self.operations[-1] = BusOperation("imu_read", address, bytes((register, length)))
+            return bytes(registers.get(register + offset, 0) for offset in range(length))
         sample = self.imu_samples.get(address)
         if sample is None or len(sample) < length:
             raise OSError(f"no configured simulated IMU sample at 0x{address:02x}")
         self.operations[-1] = BusOperation("imu", address, bytes((register, length)))
         return sample[:length]
+
+    def write_registers(self, address: int, register: int, data: bytes) -> None:
+        self._fault("imu", address)
+        registers = self.register_map.setdefault(address, {})
+        for offset, byte in enumerate(bytes(data)):
+            registers[register + offset] = byte
+        self.operations[-1] = BusOperation("imu_write", address, bytes((register,)) + bytes(data))
 
     def close(self) -> None:
         self.closed = True

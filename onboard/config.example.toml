@@ -30,3 +30,17 @@ signed = true
 accel_scale_mg_per_count = 1.0
 gyro_scale_mrad_s_per_count = 1.0
 interval_ms = 100
+
+# Optional direct LSM9DS1 request service. The Pi is the only I2C controller.
+# A ground IMU_REQUEST (path=0) causes a fresh bounded register read.
+[lsm9ds1]
+enabled = false
+ag_address = 107
+mag_address = 30
+
+# Optional sensor Pico mailbox at 0x0A / component 159. It never initiates I2C.
+# Board requests use the polled dependency flow through this Pi-owned sensor.
+[sensor]
+enabled = false
+address = 10
+component = 159
