@@ -10,7 +10,7 @@ Source of truth for messages: `protocol/arsem.xml` (schema `1.1.0`: the eight ex
 | --- | --- | --- | --- | --- |
 | Pi (boat brain, sole bus controller) | 1 | 1 | controller | routes, validates, owns IMU reads |
 | Motor Pico (Pico 2) | 1 | 154 | 0x08 | servo/encoder actuator node |
-| Sensors/comms Pico (Pico 1) | 1 | 158 | 0x09 | radio relay + telemetry forwarder |
+| Optional comms Pico (Pico 1) | 1 | 158 | 0x09 | radio relay + telemetry forwarder |
 | IMU | — | — | device-specific (driver-configurable, provisional) | passive peripheral; the Pi reads its registers |
 | Ground station (GUI/CLI) | 255 | 190 | — | sole command origin for movement requests |
 
@@ -48,7 +48,7 @@ One shared 100 kHz bus, Pi is the sole controller. Each peer mailbox transfer is
 
 ## 4. Transports
 
-- **LoRa (REYAX RYLR998)**: binary MAVLink end-to-end; Base64 only inside the modem's ASCII `AT+SEND`/`+RCV` envelope (240-char payload → ≤168-byte unsigned payload, all supported frames fit the 64-byte mailbox). Ground Pico is a USB-raw-MAVLink ↔ radio gateway in the same dialect.
+- **LoRa (REYAX RYLR998)**: binary MAVLink end-to-end; Base64 only inside the modem's ASCII `AT+SEND`/`+RCV` envelope (240-char payload → ≤168-byte unsigned payload, all supported frames fit the 64-byte mailbox). The current bench uses the shared host modem driver directly over laptop USB-UART and Pi UART, with no radio gateway Pico required. The older ground/comms Pico route is optional. See `docs/direct-radio.md`.
 - **SSH**: persistent key-authenticated SSH process to the Pi bridge; raw MAVLink on stdin/stdout, logs on stderr. Uses local SSH config and host-key verification; the GUI never launches an arbitrary shell command from user input.
 - **Simulation**: a visibly labeled in-process transport implementing the identical interface; simulated measurements labeled continuously.
 - No silent transport fallback; a disconnect stays visible and requires operator reconnect.

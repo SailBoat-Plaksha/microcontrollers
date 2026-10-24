@@ -1,5 +1,34 @@
 # Boat midsem scenarios 1–11
 
+The direct Laptop/Pi radio topology is exercised separately with:
+
+```sh
+python3 -m scenarios.direct_radio
+```
+
+That runner opens two production `LoRaModemTransport` instances on a paired
+fake serial modem boundary, runs the actual Pi `_run_radio_service` and router,
+and uses the same compiled motor adapter harness as the original scenarios.
+It does not start the optional ground gateway or comms relay. Its JSON summary
+is deterministic and excludes host-clock RTTs and boot/session randomness.
+The fixture covers both endpoint address/AT configurations, absolute and STEP
+motion with terminal correlated outcomes and independently injected encoder
+counts, Pi/motor ping, invalid modem frames, Pi source/target rejection,
+motor-health freshness, queue bounds/STOP priority, short writes, ACK timeout,
+`+ERR` rejection, disconnect, reconnect, and no replay of uncertain sends.
+I2C operations must stay on motor address `0x08`; address `0x09` is not polled.
+
+As with the original host scenarios, fake serial modems and the compiled motor
+adapter do not prove electrical UART/I2C behavior, actual RYLR998 RF delivery,
+physical encoders, motor movement, or live hardware reliability.
+
+During fixture bring-up, delivering a `+RCV` line before `+OK` on the same
+reader stream reproduced an ACK timeout when the receive callback was blocked
+on the client's send lock. The direct runner uses ACK-before-receive ordering
+for ordinary sends and does not claim to cover that concurrent line ordering;
+the production reader/callback issue remains for the parent radio change to
+resolve.
+
 Run from the repository root:
 
 ```sh

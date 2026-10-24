@@ -2,9 +2,21 @@ import unittest
 from unittest.mock import patch
 
 from groundstation import app
+from groundstation.state import GroundStationState
 
 
 class AppImportTests(unittest.TestCase):
+    def test_invalid_modem_settings_are_reported_without_opening_a_port(self):
+        for settings, expected in (({"local_address": 70000}, "Local modem address"),
+                                   ({"band_hz": -1}, "Modem frequency")):
+            with self.subTest(settings=settings), patch.object(app, "STATE", GroundStationState()):
+                app._call_background(app._connect, "LoRa · direct USB UART",
+                                     "fixture-port", 115200, "", settings).result(timeout=2)
+                self.assertFalse(app.STATE.connected)
+                self.assertIsNone(app.STATE.client)
+                self.assertTrue(app.STATE.detail.startswith(expected), app.STATE.detail)
+                self.assertNotIn("ValueError", app.STATE.detail)
+
     def test_import_is_headless_and_transport_factory_is_replaceable(self):
         original = app.TRANSPORT_FACTORIES["simulation"]
         replacement = lambda port, baud: (port, baud)

@@ -44,12 +44,14 @@ class LoRaModemTransport:
                                        ("peer_address", peer_address, 0, 65535),
                                        ("network_id", network_id, 3, 18)):
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-                raise ValueError(f"{name} must be an integer from {low} to {high}")
+                label = {"local_address": "Local modem address", "peer_address": "Boat modem address",
+                         "network_id": "Network ID"}[name]
+                raise ValueError(f"{label} must be a whole number between {low} and {high}.")
         if network_id not in (*range(3, 16), 18):
             raise ValueError("network_id must be 3..15 or 18")
         if band_hz is not None and (isinstance(band_hz, bool) or not isinstance(band_hz, int)
                                     or band_hz <= 0):
-            raise ValueError("band_hz must be a positive integer or None")
+            raise ValueError("Modem frequency must be a positive whole number in Hz, or left blank.")
         if not isinstance(port, str) or not port.strip() or any(c in port for c in "\x00\r\n"):
             raise ValueError("port must be a non-empty serial port name")
         if isinstance(baudrate, bool) or not isinstance(baudrate, int) or baudrate <= 0:

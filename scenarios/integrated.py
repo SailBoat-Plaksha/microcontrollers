@@ -135,14 +135,15 @@ class RouterTransport:
 
 
 class IntegratedRig:
-    def __init__(self, *, imu: bytes | None = None, boot_id=0x10203040):
+    def __init__(self, *, imu: bytes | None = None, boot_id=0x10203040,
+                 service_config: ServiceConfig | None = None):
         self.clock = ManualClock()
         self.tmp, self.lib = _load_motor()
         self.motor = self.lib.scenario_motor_create(boot_id)
         if not self.motor: raise MemoryError("could not allocate compiled motor adapter")
         self.bus = CompiledMotorBus(self.lib, self.motor, self.clock, imu=imu)
         self.frames: list[dict] = []
-        self.router = BoatRouter(self.bus, ServiceConfig(
+        self.router = BoatRouter(self.bus, service_config or ServiceConfig(
             imu=(IMURegisterConfig(address=0x68, register=0x10,
                 accel_scale_mg_per_count=1, gyro_scale_mrad_s_per_count=1,
                 interval_ms=20) if imu is not None else None)),
