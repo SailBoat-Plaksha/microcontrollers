@@ -4,6 +4,8 @@ import unittest
 
 from scenarios.sensor_board import (
     run_sensor_direct_and_cache,
+    run_sensor_board_route,
+    run_sensor_radio_route,
     run_sensor_error_and_partial,
     run_sensor_local_and_wrong_correlation,
     run_sensor_stop_priority,
@@ -11,6 +13,12 @@ from scenarios.sensor_board import (
 
 
 class SensorBoardScenarioTests(unittest.TestCase):
+    def test_actual_compiled_pico_dependency_keeps_ground_correlation(self):
+        run_sensor_board_route()
+
+    def test_direct_and_pico_requests_return_over_actual_host_modem_drivers(self):
+        run_sensor_radio_route()
+
     def test_direct_route_uses_production_driver_without_pico_and_deduplicates(self):
         evidence = run_sensor_direct_and_cache()["direct"]
         self.assertEqual(evidence["reading"]["valid_fields"], 7)

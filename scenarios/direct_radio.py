@@ -8,6 +8,7 @@ motor adapter remain the production implementations.
 from __future__ import annotations
 
 import base64
+from collections import deque
 import argparse
 import json
 import threading
@@ -176,9 +177,9 @@ class Pulse:
 
 
 class DirectRadioRig:
-    def __init__(self):
+    def __init__(self, *, rig=None):
         self.air = FakeRadioAir()
-        self.rig = IntegratedRig(boot_id=0x12345678,
+        self.rig = rig if rig is not None else IntegratedRig(boot_id=0x12345678,
             service_config=ServiceConfig(comms_enabled=False, poll_interval_ms=20))
         self.clock = self.rig.clock
         args = SimpleNamespace(port="pi-fake", baud=115200, local_address=1,
@@ -226,13 +227,26 @@ class DirectRadioRig:
 
         enqueue_radio = onboard_main._enqueue_radio
         send_frame = self.pi.send_frame
+        fixture = self
+
+        class TrackedQueueItems(deque):
+            # Count actual insertions, including eviction, rather than enqueue
+            # calls: coalescing replaces a frame without adding writer work.
+            def insert(self, index, value):
+                super().insert(index, value)
+                fixture.radio_tx_pending += 1
+
+            def __delitem__(self, index):
+                super().__delitem__(index)
+                fixture.radio_tx_pending -= 1
 
         def tracked_enqueue(outgoing, frame):
             with self.radio_tx_cv:
-                self.radio_tx_pending += 1
+                with outgoing.mutex:
+                    if not isinstance(outgoing.queue, TrackedQueueItems):
+                        self.radio_tx_pending += len(outgoing.queue)
+                        outgoing.queue = TrackedQueueItems(outgoing.queue)
                 accepted = enqueue_radio(outgoing, frame)
-                if not accepted:
-                    self.radio_tx_pending -= 1
                 self.radio_tx_cv.notify_all()
                 return accepted
 
@@ -255,7 +269,7 @@ class DirectRadioRig:
             onboard_main._enqueue_radio = enqueue_radio
             self.pi.send_frame = send_frame
 
-    def start(self):
+    def start(self, *, reconcile_motor=True):
         self.service.start()
         wait_for(lambda: self.pi.is_connected, "Pi modem did not finish AT configuration")
         self.client = BoatClient(self.ground, clock=self.clock)
@@ -263,6 +277,8 @@ class DirectRadioRig:
         self.client.connect()
         self.ground_rf_baseline = len(self.air.rf_deliveries)
         self.ground_callback_baseline = self.ground_completed_deliveries
+        if not reconcile_motor:
+            return
         _eventually(self, lambda: self.client._reconciled,
                     f"actual modem/router/motor path did not reconcile motor health/status; "
                     f"clock={self.clock.now}, events={self.events!r}, "

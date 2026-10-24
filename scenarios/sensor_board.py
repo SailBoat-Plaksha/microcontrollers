@@ -383,6 +383,40 @@ def run_sensor_stop_priority():
     finally: rig.cleanup()
 
 
+def run_sensor_radio_route():
+    """Use both production modem drivers and Pi service around the C mailbox."""
+    from scenarios.direct_radio import DirectRadioRig
+    fixture = SensorRig(board=True)
+    radio = DirectRadioRig(rig=fixture)
+    try:
+        radio.start(reconcile_motor=False)
+        evidence = []
+        for path, source in (("direct", (1, 1)), ("board", (1, 159))):
+            ticket = radio.client.request_imu(path, timeout_ms=2000)
+            result = None
+            for _ in range(80):
+                radio.pump()
+                result = next((event for event in radio.events
+                    if isinstance(event, ImuReading) and event.request_id == ticket.request_id), None)
+                if result is not None:
+                    break
+            assert result is not None, f"{path}: no correlated IMU radio response"
+            assert (result.status, result.valid_fields, result.source) == (1, 7, source), result
+            assert result.mag_mgauss == (-140, 280, -420), result
+            evidence.append({"path": path, "request_id": result.request_id,
+                "source": list(result.source), "valid_fields": result.valid_fields,
+                "mag_mgauss": list(result.mag_mgauss)})
+        decoded = [codec.decode(bytes.fromhex(item["frame"])) for item in radio.air.rf_deliveries]
+        assert sum(item["name"] == "IMU_REQUEST" for item in decoded) == 2
+        assert sum(item["name"] == "IMU_SAMPLE" for item in decoded) == 2
+        assert not any(item["address"] == 0x09 for item in fixture.bus.operations)
+        return {"readings": evidence, "rf_frames": len(decoded),
+                "sensor_mailbox_operations": len([item for item in fixture.bus.operations
+                    if item["address"] == 0x0A])}
+    finally:
+        radio.close()
+
+
 def run_sensor_scenarios():
     """Run sensor scenarios individually so the known integration defect stays visible."""
     results = {}
@@ -390,7 +424,8 @@ def run_sensor_scenarios():
                            ("board", run_sensor_board_route),
                            ("local", run_sensor_local_and_wrong_correlation),
                            ("errors", run_sensor_error_and_partial),
-                           ("stop_priority", run_sensor_stop_priority)):
+                           ("stop_priority", run_sensor_stop_priority),
+                           ("radio", run_sensor_radio_route)):
         try: results[name] = {"status": "PASS", "evidence": function()}
         except Exception as exc: results[name] = {"status": "FAIL", "detail": str(exc)}
     return results
