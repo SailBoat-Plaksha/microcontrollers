@@ -8,6 +8,7 @@ motor adapter remain the production implementations.
 from __future__ import annotations
 
 import base64
+import argparse
 import json
 import threading
 import time
@@ -39,6 +40,8 @@ class FakeRadioAir:
         self.cv = threading.Condition()
         self.devices = {}
         self.tx = []
+        self.rf_deliveries = []
+        self.injections = {1: [], 2: []}
         self.ack_mode = {1: "ok", 2: "ok"}
         self.air_delay = 0.0
         self.closed = set()
@@ -66,19 +69,17 @@ class FakeRadioAir:
         codec.decode(payload)
         self.tx.append({"source": source, "target": address, "command": command.decode("ascii").strip(),
                         "frame": payload.hex()})
-        if self.air_delay:
-            # Deterministic air delay is a bounded condition wait, not a blind sleep.
-            gate = threading.Event()
-            if not gate.wait(self.air_delay):
-                pass
         mode = self.ack_mode[source]
         if mode == "ok":
             self.devices[source].inject(b"+OK\r\n")
         elif mode == "err":
             self.devices[source].inject(b"+ERR=busy\r\n")
+            return
         peer = self.devices.get(address)
         if peer is not None:
             encoded = base64.b64encode(payload)
+            self.rf_deliveries.append({"source": source, "target": address,
+                                       "frame": payload.hex()})
             peer.inject(b"+RCV=" + str(source).encode() + b"," + str(len(encoded)).encode() +
                         b"," + encoded + b",-61,9.5\r\n")
 
@@ -95,6 +96,7 @@ class FakeSerial:
         self.tx_buffer = bytearray()
 
     def inject(self, data):
+        self.air.injections[self.address].append(bytes(data))
         with self.cv:
             self.rx.extend(data)
             self.cv.notify_all()
@@ -188,6 +190,22 @@ class DirectRadioRig:
             peer_address=1, network_id=18, band_hz=915000000,
             parameter="10,7,1,12", serial_factory=self.air.factory,
             command_timeout_s=0.3, queue_limit=4)
+        self.ground_delivery_cv = threading.Condition()
+        self.ground_completed_deliveries = 0
+        original_open = self.ground.open
+
+        def open_with_completion(callback):
+            def completed_callback(frame):
+                try:
+                    callback(frame)
+                finally:
+                    with self.ground_delivery_cv:
+                        self.ground_completed_deliveries += 1
+                        self.ground_delivery_cv.notify_all()
+            return original_open(completed_callback)
+
+        # Fixture-owned completion barrier, independent of transport internals.
+        self.ground.open = open_with_completion
         self.pulse = Pulse(self.clock)
         self.service_error = []
         self.service = threading.Thread(target=self._service, daemon=True)
@@ -212,9 +230,11 @@ class DirectRadioRig:
         self.client = BoatClient(self.ground, clock=self.clock)
         self.client.subscribe(self.events.append)
         self.client.connect()
-        self.pump(80)
-        wait_for(lambda: self.client._reconciled,
-                 "actual modem/router/motor path did not reconcile motor health/status")
+        _eventually(self, lambda: self.client._reconciled,
+                    f"actual modem/router/motor path did not reconcile motor health/status; "
+                    f"clock={self.clock.now}, events={self.events!r}, "
+                    f"tx={self.air.tx!r}, pi_stats={self.pi.stats!r}, "
+                    f"ground_stats={self.ground.stats!r}, service_error={self.service_error!r}")
 
     def pump(self, count=1):
         for _ in range(count):
@@ -223,12 +243,16 @@ class DirectRadioRig:
             self.pulse.tick()
 
     def settle_ground_rx(self):
-        """Wait for queued paired-modem lines and callbacks to drain."""
-        serial = self.air.devices[2]
-        wait_for(lambda: not serial.rx, "ground fake modem RX did not drain")
-        if not self.ground._callback_lock.acquire(timeout=TIMEOUT):
-            raise AssertionError("ground transport callback did not finish")
-        self.ground._callback_lock.release()
+        """Wait until each injected RF frame completed BoatClient dispatch."""
+        expected = sum(item["target"] == 2 for item in self.air.rf_deliveries)
+        end = time.monotonic() + TIMEOUT
+        with self.ground_delivery_cv:
+            while self.ground_completed_deliveries < expected:
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"ground callback barrier timed out: {self.ground_completed_deliveries}/{expected}")
+                self.ground_delivery_cv.wait(remaining)
 
     def close(self):
         self.pulse.stop.set()
@@ -271,12 +295,13 @@ def run_direct_route():
         assert rig.lib.scenario_motor_target(rig.motor, 0) == 1200
         rig.step_encoder(1, 1200)
         _eventually(rig, lambda: any(isinstance(e, RequestOutcome) and
-            e.request_id == absolute.request_id and e.state in (4, 5, 6) for e in rig.events),
+            e.request_id == absolute.request_id and e.state == 4 and e.result == 1 for e in rig.events),
             "actual terminal REQUEST_RESULT did not return to BoatClient")
         _eventually(rig, lambda: rig.lib.scenario_motor_enabled(rig.motor, 0) == 0,
                     "compiled motor output did not stop at measured target")
         outcome = next(e for e in rig.events if isinstance(e, RequestOutcome) and
-                       e.request_id == absolute.request_id and e.state in (4, 5, 6))
+                       e.request_id == absolute.request_id and e.state == 4 and e.result == 1)
+        assert outcome.state == 4 and outcome.result == 1, outcome
         assert outcome.ground_session == absolute.ground_session
         snapshot = (__import__("ctypes").c_uint8 * 64)()
         rig.lib.scenario_motor_snapshot(rig.motor, 0, snapshot)
@@ -292,13 +317,56 @@ def run_direct_route():
                     "STEP did not resolve from independently measured position")
         rig.step_encoder(1, 1500)
         _eventually(rig, lambda: any(isinstance(e, RequestOutcome) and
-            e.request_id == step.request_id and e.state in (4, 5, 6) for e in rig.events),
+            e.request_id == step.request_id and e.state == 4 and e.result == 1 for e in rig.events),
             "STEP terminal outcome was not correlated")
+        step_outcome = next(e for e in rig.events if isinstance(e, RequestOutcome) and
+                            e.request_id == step.request_id and e.state == 4 and e.result == 1)
+        assert step_outcome.state == 4 and step_outcome.result == 1, step_outcome
         rig.lib.scenario_motor_snapshot(rig.motor, 0, snapshot)
         raw = bytes(snapshot)
         motor_status = codec.decode(raw[:12 + raw[1]])
         assert motor_status["fields"]["measured_position_cdeg"] == 1500, motor_status
         assert motor_status["fields"]["enabled"] == 0
+
+        step_frames = [bytes.fromhex(entry["frame"]) for entry in rig.air.rf_deliveries
+                       if entry["source"] == 2 and
+                       codec.decode(bytes.fromhex(entry["frame"]))["name"] == "ACTUATOR_REQUEST" and
+                       codec.decode(bytes.fromhex(entry["frame"]))["fields"]["request_id"] == step.request_id]
+        assert len(step_frames) == 1, len(step_frames)
+        duplicate = step_frames[0]
+        before_duplicate_writes = sum(op["op"] == "write" for op in rig.bus.operations)
+        before_duplicate_target = rig.lib.scenario_motor_target(rig.motor, 0)
+        rig.ground.send_frame(duplicate)
+        wait_for(lambda: sum(entry["source"] == 2 and entry["frame"] == duplicate.hex()
+                             for entry in rig.air.rf_deliveries) == 2,
+                 "duplicate STEP was not delivered through paired modems")
+        for _ in range(4):
+            rig.pump(1)
+        after_duplicate_writes = sum(op["op"] == "write" for op in rig.bus.operations)
+        assert after_duplicate_writes == before_duplicate_writes, "duplicate STEP caused another motor I2C write"
+        assert rig.lib.scenario_motor_target(rig.motor, 0) == before_duplicate_target
+
+        active = rig.client.set_absolute_angle(1, 2000, timeout_ms=1000, max_rate_cdeg_s=500)
+        _eventually(rig, lambda: rig.lib.scenario_motor_enabled(rig.motor, 0) == 1 and
+                    rig.lib.scenario_motor_target(rig.motor, 0) == 2000,
+                    "active request did not establish compiled motor output before STOP")
+        stop = rig.client.stop(1)
+        _eventually(rig, lambda: any(isinstance(e, RequestOutcome) and
+            e.request_id == active.request_id and e.state == 5 for e in rig.events),
+            f"active request did not report STOPPED after actual STOP path: "
+            f"{[e for e in rig.events if isinstance(e, RequestOutcome) and e.request_id in (active.request_id, stop.request_id)]!r}; "
+            f"clock={rig.clock.now}, air_tx={rig.air.tx!r}, service_error={rig.service_error!r}, "
+            f"bus_tail={rig.bus.operations[-12:]!r}")
+        _eventually(rig, lambda: any(isinstance(e, RequestOutcome) and
+            e.request_id == stop.request_id and e.state == 5 for e in rig.events),
+            "STOP request did not report STOPPED through actual Pi/motor path")
+        _eventually(rig, lambda: rig.lib.scenario_motor_enabled(rig.motor, 0) == 0,
+                    "STOP did not turn off compiled motor output")
+        active_outcome = next(e for e in rig.events if isinstance(e, RequestOutcome) and
+                              e.request_id == active.request_id and e.state == 5)
+        stop_outcome = next(e for e in rig.events if isinstance(e, RequestOutcome) and
+                            e.request_id == stop.request_id and e.state == 5)
+        assert active_outcome.state == 5 and stop_outcome.state == 5
 
         before_writes = sum(op["op"] == "write" for op in rig.bus.operations)
         invalid_fields = {"request_id": 77, "ground_session": rig.client.ground_session,
@@ -334,10 +402,11 @@ def run_direct_route():
         else:
             raise AssertionError("stale motor query evidence did not block movement")
         return {"status": "PASS", "checks": ["actual modem AT setup both directions",
-            "absolute motion and returned correlated result", "STEP from measured state",
+            "absolute motion and completed correlated result", "STEP from measured state and duplicate suppression",
+            "active-output STOP through BoatClient, paired modems, Pi router and compiled motor",
             "wrong source/target blocked before motor I2C", "Pi and motor ping; no comms 0x09 poll",
             "stale motor health/status blocks movement"],
-            "requests": [absolute.request_id, step.request_id],
+            "requests": [absolute.request_id, step.request_id, active.request_id, stop.request_id],
             "outcome": {"request_id": outcome.request_id, "state": outcome.state,
                         "result": outcome.result, "source": list(outcome.source)},
             "measured_cdeg": 1500,
@@ -420,6 +489,8 @@ def run_transport_reliability():
         _capture_send(ground, rejected, errors)
         assert isinstance(errors[-1], OSError), errors
         assert sum(tx["frame"] == rejected.hex() for tx in air.tx) == 1
+        assert not any(item["frame"] == rejected.hex() for item in air.rf_deliveries), (
+            "known local +ERR was incorrectly modeled as RF delivery")
         ground.close()
         air.ack_mode[2] = "ok"
         ground.open(received.append)
@@ -458,9 +529,63 @@ def _capture_send(transport, frame, errors):
         errors.append(exc)
 
 
+def run_receive_before_ack():
+    """Exercise real reader and callback threads with peer RCV before local ACK."""
+    air = FakeRadioAir()
+    ground = LoRaModemTransport("laptop-fake", local_address=2, peer_address=1,
+        serial_factory=air.factory, command_timeout_s=0.5, queue_limit=4)
+    pi = LoRaModemTransport("pi-fake", local_address=1, peer_address=2,
+        serial_factory=air.factory, command_timeout_s=0.5, queue_limit=4)
+    callback_done = threading.Event()
+    callback_errors = []
+    send_errors = []
+    ground_received = []
+
+    def respond(_frame):
+        try:
+            pi.send_frame(_ping(91))
+        except BaseException as exc:
+            callback_errors.append(exc)
+        finally:
+            callback_done.set()
+
+    def receive_ground(frame):
+        ground_received.append(bytes(frame))
+
+    try:
+        pi.open(respond)
+        ground.open(receive_ground)
+        air.injections[2].clear()
+        air.ack_mode[2] = "hold"
+        outgoing = _ping(90)
+        sender = threading.Thread(target=lambda: _capture_send(ground, outgoing, send_errors),
+                                  daemon=True)
+        sender.start()
+        wait_for(callback_done.is_set,
+                 "paired Pi callback did not return a real modem response before ground ACK")
+        wait_for(lambda: bool(ground_received),
+                 "ground reader/callback did not dispatch peer +RCV before local +OK")
+        observed = air.injections[2]
+        assert observed and observed[0].startswith(b"+RCV="), observed
+        assert not any(line.startswith(b"+OK") for line in observed)
+        assert sender.is_alive(), "held local modem ACK did not keep send pending"
+        air.devices[2].inject(b"+OK\r\n")
+        sender.join(TIMEOUT)
+        assert not sender.is_alive(), "ground send did not complete after delayed +OK"
+        assert send_errors == [] and callback_errors == [], (send_errors, callback_errors)
+        assert ground_received == [_ping(91)], ground_received
+        assert sum(item["frame"] == outgoing.hex() for item in air.rf_deliveries) == 1
+        assert sum(item["frame"] == _ping(91).hex() for item in air.rf_deliveries) == 1
+        return {"status": "PASS", "ground_injection_order": [
+                    "peer +RCV", "local +OK"], "request_transmissions": 1,
+                "response_transmissions": 1, "send_errors": [], "callback_errors": []}
+    finally:
+        ground.close(); pi.close()
+
+
 def _request_frame(request_id, opcode):
     return codec.encode("ACTUATOR_REQUEST", {
-        "request_id": request_id, "ground_session": 0x1234, "delta_cdeg": 100,
+        "request_id": request_id, "ground_session": 0x1234, "delta_cdeg": 0 if opcode == 3 else 100,
         "timeout_ms": 1000, "max_rate_cdeg_s": 500, "target_system": 1,
         "target_component": 154, "actuator": 1, "opcode": opcode,
         "control_source": 3}, system=255, component=190)
@@ -518,11 +643,19 @@ def run_stop_queue_priority():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Direct paired-modem host scenarios")
+    parser.add_argument("--json", metavar="PATH", help="also write JSON report to PATH")
+    args = parser.parse_args()
     results = {"direct_route": run_direct_route(),
                "validation_rejection": run_validation_rejection(),
+               "receive_before_ack": run_receive_before_ack(),
                "transport_reliability": run_transport_reliability(),
                "stop_queue_priority": run_stop_queue_priority()}
-    print(json.dumps(results, sort_keys=True, separators=(",", ":")))
+    report = json.dumps(results, sort_keys=True, separators=(",", ":"))
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as output:
+            output.write(report + "\n")
+    print(report)
 
 
 if __name__ == "__main__":

@@ -6,28 +6,38 @@ The direct Laptop/Pi radio topology is exercised separately with:
 python3 -m scenarios.direct_radio
 ```
 
+To also save the deterministic JSON summary, pass a path:
+
+```sh
+python3 -m scenarios.direct_radio --json /tmp/direct-radio-results.json
+```
+
 That runner opens two production `LoRaModemTransport` instances on a paired
 fake serial modem boundary, runs the actual Pi `_run_radio_service` and router,
 and uses the same compiled motor adapter harness as the original scenarios.
 It does not start the optional ground gateway or comms relay. Its JSON summary
 is deterministic and excludes host-clock RTTs and boot/session randomness.
 The fixture covers both endpoint address/AT configurations, absolute and STEP
-motion with terminal correlated outcomes and independently injected encoder
-counts, Pi/motor ping, invalid modem frames, Pi source/target rejection,
-motor-health freshness, queue bounds/STOP priority, short writes, ACK timeout,
-`+ERR` rejection, disconnect, reconnect, and no replay of uncertain sends.
+motion with completed correlated outcomes and independently injected encoder
+counts, exact duplicate STEP suppression, active-output STOP through
+BoatClient/modems/Pi/router/compiled motor, Pi/motor ping, invalid modem frames,
+Pi source/target rejection, motor-health freshness, queue bounds/STOP priority,
+short writes, ACK timeout, `+ERR` rejection, disconnect, reconnect, and no
+replay of uncertain sends. A paired-modem regression delivers peer `+RCV`
+before local `+OK` and checks that both real transport callbacks complete.
+Reports separate AT commands observed at the serial boundary from RF deliveries
+in the paired-modem fixture. A known local `+ERR` is not an RF delivery, while
+an ACK timeout remains one ambiguous possible delivery.
 I2C operations must stay on motor address `0x08`; address `0x09` is not polled.
 
 As with the original host scenarios, fake serial modems and the compiled motor
 adapter do not prove electrical UART/I2C behavior, actual RYLR998 RF delivery,
 physical encoders, motor movement, or live hardware reliability.
 
-During fixture bring-up, delivering a `+RCV` line before `+OK` on the same
-reader stream reproduced an ACK timeout when the receive callback was blocked
-on the client's send lock. The direct runner uses ACK-before-receive ordering
-for ordinary sends and does not claim to cover that concurrent line ordering;
-the production reader/callback issue remains for the parent radio change to
-resolve.
+The transport regression covers `+RCV` arriving before `+OK` on the ground
+modem's reader stream while a ground send is pending. The response is sent by
+the paired production transport callback, and the send completes only after
+the delayed local ACK is injected.
 
 Run from the repository root:
 
