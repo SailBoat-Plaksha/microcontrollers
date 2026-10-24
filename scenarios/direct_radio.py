@@ -192,6 +192,8 @@ class DirectRadioRig:
             command_timeout_s=0.3, queue_limit=4)
         self.ground_delivery_cv = threading.Condition()
         self.ground_completed_deliveries = 0
+        self.ground_rf_baseline = 0
+        self.ground_callback_baseline = 0
         original_open = self.ground.open
 
         def open_with_completion(callback):
@@ -208,6 +210,8 @@ class DirectRadioRig:
         self.ground.open = open_with_completion
         self.pulse = Pulse(self.clock)
         self.service_error = []
+        self.radio_tx_cv = threading.Condition()
+        self.radio_tx_pending = 0
         self.service = threading.Thread(target=self._service, daemon=True)
         self.client = None
         self.events = []
@@ -218,11 +222,38 @@ class DirectRadioRig:
         return getattr(self.rig, name)
 
     def _service(self):
+        import onboard.__main__ as onboard_main
+
+        enqueue_radio = onboard_main._enqueue_radio
+        send_frame = self.pi.send_frame
+
+        def tracked_enqueue(outgoing, frame):
+            with self.radio_tx_cv:
+                self.radio_tx_pending += 1
+                accepted = enqueue_radio(outgoing, frame)
+                if not accepted:
+                    self.radio_tx_pending -= 1
+                self.radio_tx_cv.notify_all()
+                return accepted
+
+        def tracked_send(frame):
+            try:
+                return send_frame(frame)
+            finally:
+                with self.radio_tx_cv:
+                    self.radio_tx_pending -= 1
+                    self.radio_tx_cv.notify_all()
+
+        onboard_main._enqueue_radio = tracked_enqueue
+        self.pi.send_frame = tracked_send
         try:
             _run_radio_service(self.rig.router, self.pi, lambda: self.pulse.stop.is_set(),
                                sleep=self.pulse.sleep)
         except BaseException as exc:
             self.service_error.append(exc)
+        finally:
+            onboard_main._enqueue_radio = enqueue_radio
+            self.pi.send_frame = send_frame
 
     def start(self):
         self.service.start()
@@ -230,6 +261,8 @@ class DirectRadioRig:
         self.client = BoatClient(self.ground, clock=self.clock)
         self.client.subscribe(self.events.append)
         self.client.connect()
+        self.ground_rf_baseline = len(self.air.rf_deliveries)
+        self.ground_callback_baseline = self.ground_completed_deliveries
         _eventually(self, lambda: self.client._reconciled,
                     f"actual modem/router/motor path did not reconcile motor health/status; "
                     f"clock={self.clock.now}, events={self.events!r}, "
@@ -241,17 +274,29 @@ class DirectRadioRig:
             if self.service_error:
                 raise self.service_error[0]
             self.pulse.tick()
+            end = time.monotonic() + TIMEOUT
+            with self.radio_tx_cv:
+                while self.radio_tx_pending:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        raise AssertionError(
+                            f"Pi radio writer did not drain after scheduler tick: {self.radio_tx_pending} pending")
+                    self.radio_tx_cv.wait(remaining)
+            self.settle_ground_rx()
 
     def settle_ground_rx(self):
         """Wait until each injected RF frame completed BoatClient dispatch."""
-        expected = sum(item["target"] == 2 for item in self.air.rf_deliveries)
+        expected = (self.ground_callback_baseline +
+                    sum(item["target"] == 2 for item in
+                        self.air.rf_deliveries[self.ground_rf_baseline:]))
         end = time.monotonic() + TIMEOUT
         with self.ground_delivery_cv:
             while self.ground_completed_deliveries < expected:
                 remaining = end - time.monotonic()
                 if remaining <= 0:
                     raise AssertionError(
-                        f"ground callback barrier timed out: {self.ground_completed_deliveries}/{expected}")
+                        f"ground callback barrier timed out: {self.ground_completed_deliveries}/"
+                        f"expected={expected}")
                 self.ground_delivery_cv.wait(remaining)
 
     def close(self):
