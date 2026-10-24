@@ -17,6 +17,8 @@ Open `http://127.0.0.1:8080`. To choose another local port use `--port 8081`. Bi
 The app's connection choices are:
 
 - **LoRa · direct USB UART**: primary direct-radio path. The laptop opens the RYLR998 modem on USB-UART, configures its local address, network ID and modulation parameters, then sends codec-validated MAVLink frames as Base64 modem payloads. Local address `2`, expected boat peer `1`, and network ID `18` are the defaults. Both radios must use matching network, frequency and RF parameters. Optional band frequency is sent only when entered; an empty field leaves the modem's stored band unchanged. The Pi is the boat-side modem host and remains the only I2C controller. Modem `+OK` means local acceptance; motor status/outcome is separate Pi/MAVLink feedback.
+
+Direct-radio `send_frame` waits synchronously for the modem ACK and can block up to the configured command timeout. Call it from a worker outside GUI event loops and outside the Pi's sole I2C thread. The groundstation and Pi integration must keep this operation off their UI/I2C execution paths.
 - **LoRa · ground Pico USB (raw MAVLink)**: optional legacy mode. USB serial carries raw unsigned MAVLink to a ground Pico gateway, which handles the modem envelope.
 - **SSH · Pi bridge**: persistent SSH through a host alias in `~/.ssh/config`; SSH must already trust the host key. The fixed remote command is `python3 -m onboard bridge --config /etc/arsem/onboard.toml`; stdout is raw MAVLink and stderr is bridge logging.
 - **SIMULATION · generated values**: local peers encoded through `protocol.codec`; each connection gets a random simulated boot identity, and periodic motor, health, and IMU values remain labeled in the interface.
